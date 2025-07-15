@@ -336,39 +336,4 @@ tabla_latex_rmse = df_rmse.to_latex(index=False)
 
 # Print confirmation
 print("Results saved in 'fiabilidad_results_cont.csv'.")
-print(latex_table)
 
-print(tabla_latex_rmse)
-
-
-'''
-
-#PLOTS
-
-print(weibull_alpha_i(theta_cont_weibull, s1_weibull, s2_weibull))
-print(weibull_nu_i(theta_cont_weibull, s1_weibull, s2_weibull))
-#[18.17414537  8.16616991  3.66929667]
-#[0.60653066 0.44932896 0.33287108]
-
-
-#cont
-#[28.50273364 14.87973172  7.76790111]
-#[0.60653066 0.44932896 0.33287108]
-
-x = np.linspace(0, 40, 1000)
-
-scale,c = 7.76790111,0.33287108 #params(theta_0_weibull)
-
-cdf = stat.weibull_min.cdf(x,c, scale = scale)#distribucion1(x,theta_0_weibull,s_prueba)
-
-# Crear el gráfico
-plt.plot(x, cdf, label=f'Weibull(c={c}, scale={scale})')
-plt.title('Distribución Weibull')
-plt.xlabel('x')
-plt.ylabel('Densidad de probabilidad')
-plt.grid(True)
-plt.legend()
-plt.show()
-
-print(probabilidad_weibull(theta_0_weibull, IT_weibull, s1_weibull, s2_weibull))
-'''
