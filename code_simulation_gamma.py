@@ -8,33 +8,33 @@ import scipy.optimize as opt
 
 
 #parámetro de forma     
-def gamma_alpha_i(theta, si1, si2):
+def gamma_alpha_i(theta, s1, s2):
   a0 = theta[0]
   a1 = theta[1]
   a2 = theta[2]
   alphai =[]
-  for i in si1:
-      for j in si2:
+  for i in s1:
+      for j in s2:
           alphai.append( np.exp(a0 + a1*i +a2*j))
   return np.array(alphai)
 
 #parámetro de escala
-def gamma_lambda_i(theta, si1, si2):
+def gamma_lambda_i(theta, s1, s2):
   b0 = theta[3]
   b1 = theta[4]
   b2 = theta[5]
   lambdai = []
-  for i in si1:
-      for j in si2:
+  for i in s1:
+      for j in s2:
           lambdai.append(np.exp(b0 + b1*i +b2*j))
   return np.array(lambdai)
 
 #print(gamma_alpha_i(theta_0_gamma, s1_gamma, s2_gamma))
 #print(gamma_lambda_i(theta_0_gamma, s1_gamma, s2_gamma))
 #Funcion de distribución gamma
-def gamma_distribucion(t, theta, si1, si2):
-  alphai = gamma_alpha_i(theta, si1, si2)
-  lambdai = gamma_lambda_i(theta, si1, si2)
+def gamma_distribucion(t, theta, s1, s2):
+  alphai = gamma_alpha_i(theta, s1, s2)
+  lambdai = gamma_lambda_i(theta, s1, s2)
   return stat.gamma.cdf(t, alphai, scale = lambdai)
     
 #Cálculo de probabilidad de fallo en el el momento de inspección IT_i
@@ -71,13 +71,17 @@ def divergencia_KL(pi_theta1, pi_theta2, p1, p2, theta, IT, s1, s2, muestra, K):
   p1 = probabilidad_estimada(muestra, K)
   p2 = 1 - p1
   div_KL = []
-  eps = 1e-8
+  
+  eps = 1e-10
+  
+  pi_theta1 = np.where(pi_theta1 == 0, eps, pi_theta1)
+  pi_theta2 = np.where(pi_theta2 == 0, eps, pi_theta2)
+  p1 = np.where(p1 == 0, eps, p1)
+  p2 = np.where(p2 == 0, eps, p2)
+
   for i in range(len(muestra)):
-      if np.any(np.isclose([pi_theta1[i], pi_theta2[i], p1[i], p2[i]], 0, atol=eps)):
-          div_KL.append(K*(((p1[i]+eps)* np.log((p1[i]+eps)/(pi_theta1[i]+eps))) + ((p2[i]+eps)* np.log((p2[i]+eps)/(pi_theta2[i]+eps)))))
-      else:
-          div_KL.append(K*((p1[i]* np.log(p1[i]/pi_theta1[i])) + (p2[i]* np.log(p2[i]/pi_theta2[i]))))
-  return div_KL
+      div_KL.append(K*((p1[i]* np.log(p1[i]/pi_theta1[i])) + (p2[i]* np.log(p2[i]/pi_theta2[i]))))
+  return np.array(div_KL)
 
 #Divergencia de densidad de potencia en función del parámetro alpha
 def divergencia_gamma(theta, alpha, IT, s1, s2, K, muestra):
@@ -89,9 +93,9 @@ def divergencia_gamma(theta, alpha, IT, s1, s2, K, muestra):
   div_alpha = []
   
   if alpha == 0:
-      for i in range(len(muestra)) :
-          div = divergencia_KL(pi_theta1, pi_theta2, p1, p2, theta, IT, s1, s2, muestra, K)
-          div_alpha.append(div)
+    for i in range(len(muestra)) :
+        div = divergencia_KL(pi_theta1, pi_theta2, p1, p2, theta, IT, s1, s2, muestra, K)
+        div_alpha.append(div)
  
   else:
     for i in range(len(muestra)) :
@@ -104,13 +108,16 @@ def divergencia_gamma(theta, alpha, IT, s1, s2, K, muestra):
 def emdp(theta_inicial, alpha, IT, s1, s2, K, muestra):
   args = (alpha, IT, s1,s2, K,  muestra)
   #bounds = [(5, 5.6),(-0.1, 1e-3), (-1, 1e-3),(-0.1, 1e-3)]
-  estimador = opt.minimize(divergencia_gamma, theta_inicial, args=args,  method = 'Nelder-Mead') #bounds = bounds,
+  #bounds = [(1e-3, None),(None, -1e-3),(None, -1e-3),(None, -1e-3),(1e-3, None),(None, -1e-3)]
+  #6.5, -0.06,-0.06, -0.5, 0.065,-0.01
+  estimador = opt.minimize(divergencia_gamma, theta_inicial, args=args,  method = 'Nelder-Mead') # #L-BFGS-BNelder-Mead # bounds = bounds,
   return estimador.x
+
 
 #Simulación
 
 def simulacion(R, theta_0, theta_inicial, theta_cont, IT,s1,s2, K, alphas):
-    #Se simula una muestra sin contaminar  y una muestra contaminada en función de un parámetro theta contaminado
+    #Se simula una muestra sin contaminar y una muestra contaminada en función de un parámetro theta contaminado para la primera celda
     #Devuelve el EMDP para la muestra sin contaminar y para la muestra contaminada, así como el RMSE de ambos estimadores.
     
     media_estimador =[]
@@ -131,7 +138,8 @@ def simulacion(R, theta_0, theta_inicial, theta_cont, IT,s1,s2, K, alphas):
         
         #Se estima el valor del emdp para la muestra contaminada
         muestra_cont = gen_muestra_binomial_gamma(theta_cont, IT, s1, s2, K, j)
-        theta_estimador_cont = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra_cont)
+        muestra[0] = muestra_cont[0]
+        theta_estimador_cont = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra)
         estimador_cont.append(theta_estimador_cont)
 
         #Se ecalcula la media del emdp sin contaminar
@@ -176,24 +184,22 @@ s2_gamma = np.array([40,50])
 #theta_0_gamma = np.array([4.5, -0.065, -0.46, 0.05])
 theta_0_gamma = np.array([6.5, -0.06,-0.06, -0.5, 0.065,-0.01])
 #theta_inicial_gamma = np.array([4.40, -0.065 ,-0.46, 0.05])
-theta_inicial_gamma = np.array([6, -0.06,-0.06, -0.5, 0.065,-0.01])
+theta_inicial_gamma = np.array([6.3, -0.065,-0.06, -0.5, 0.065,-0.01])
 #theta_cont_gamma = np.array([4.5, -0.07 ,-0.46, 0.05])
-theta_cont_gamma = np.array([6.5, -0.05,-0.06, -0.5, 0.065,-0.01])
+theta_cont_gamma = np.array([6.5, -0.045,-0.06, -0.5, 0.065,-0.01])
 alphas= np.array([0, 0.2, 0.4, 0.6, 0.8, 1])
 
 media_estimador_gamma, media_estimador_cont_gamma, rmse_values_gamma, rmse_cont_values_gamma = simulacion(R,theta_0_gamma, theta_inicial_gamma, theta_cont_gamma, IT_gamma, s1_gamma, s2_gamma, K, alphas)
 
-
-
 #Cálculo de la fiabilidad
 
 
-IT1 = np.array([10,20,30,40])
+IT1 = np.array([10,20,30])
 
 
 s_prueba = [25,30]
 
-def distribucion1(t, theta,s): #Función de distribución lognormal
+def distribucion1(t, theta,s): #Función de distribucion gamma
 
   a0 = theta[0]
   a1 = theta[1]
@@ -205,7 +211,7 @@ def distribucion1(t, theta,s): #Función de distribución lognormal
   lambdai =np.exp(a0 + a1*s_prueba[0]+a2*s_prueba[1])
   sigmai =np.exp(b0 + b1*s_prueba[0]+b2*s_prueba[1])
 
-  return stat.lognorm.cdf(t, sigmai, scale = lambdai)
+  return stat.gamma.cdf(t, sigmai, scale = lambdai)
 
 def fiabilidad(theta, IT, s): #Probabilidad de fallo para cada intervalo
 
@@ -221,13 +227,13 @@ def fiabilidad(theta, IT, s): #Probabilidad de fallo para cada intervalo
 
   return np.array(probabilidades2)
 
-print(fiabilidad(theta_0_gamma, IT1, s_prueba))
+lista_probs = fiabilidad(theta_0_gamma, IT1, s_prueba)
 
-df = pd.read_csv("/Users/javi/TFG_MATEMATICAS/GAMMA/estimators.csv")  # Replace with the actual CSV file path
+df = pd.read_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/gamma/estimators.csv")  # Replace with the actual CSV file path
 results_list = []
 
 for index, row in df.iterrows():
-    theta = row[0:6].values  # Extract the 6 estimated parameters from each row
+    theta = row[0:6].values  # Extract the 4 estimated parameters from each row
     alpha_value = row.iloc[-1]  # Extract alpha value
 
     prob_vector = fiabilidad(theta, IT1, s_prueba)  # Compute fiabilidad function
@@ -236,19 +242,21 @@ for index, row in df.iterrows():
     results_list.append([alpha_value] + prob_vector.tolist())
 
 columns = ["alpha"] + [f"R{IT1[i]}" for i in range(len(IT1))]
-results_df = pd.DataFrame(results_list, columns=columns)
-
+columnas = [f"R{IT1[i]}" for i in range(len(IT1))]
+results_df1 = pd.DataFrame(results_list, columns=columns)
+for i, col in enumerate(columnas):
+    results_df1[col] = results_df1[col] - lista_probs[i]
 # Step 6: Save results to a separate CSV file
-results_df.to_csv("fiabilidad_results.csv", index=False)
+results_df1.to_csv("fiabilidad_results.csv", index=False)
 
 # Print confirmation
 print("Results saved in 'fiabilidad_results.csv'.")
 
-df = pd.read_csv("/Users/javi/TFG_MATEMATICAS/GAMMA/estimators_cont.csv")  # Replace with the actual CSV file path
+df = pd.read_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/gamma/estimators_cont.csv")  # Replace with the actual CSV file path
 results_list = []
 
 for index, row in df.iterrows():
-    theta = row[0:6].values  # Extract the 6 estimated parameters from each row
+    theta = row[0:6].values  # Extract the 4 estimated parameters from each row
     alpha_value = row.iloc[-1]  # Extract alpha value
 
     prob_vector = fiabilidad(theta, IT1, s_prueba)  # Compute fiabilidad function
@@ -257,11 +265,29 @@ for index, row in df.iterrows():
     results_list.append([alpha_value] + prob_vector.tolist())
 
 columns = ["alpha"] + [f"R{IT1[i]}" for i in range(len(IT1))]
-results_df = pd.DataFrame(results_list, columns=columns)
+columnas = [f"R{IT1[i]}" for i in range(len(IT1))]
+results_df2 = pd.DataFrame(results_list, columns=columns)
+for i, col in enumerate(columnas):
+    results_df2[col] = results_df2[col] - lista_probs[i]
+
 
 # Step 6: Save results to a separate CSV file
-results_df.to_csv("fiabilidad_results_cont.csv", index=False)
+results_df2.to_csv("fiabilidad_results_cont.csv", index=False)
+
+df2_sin_primera = results_df2.iloc[:, 1:]
 
 # Print confirmation
 print("Results saved in 'fiabilidad_results_cont.csv'.")
 
+
+
+
+df_combinado = pd.concat([results_df1, df2_sin_primera], axis=1)
+latex_table=df_combinado.to_latex(index=False)
+df_rmse = pd.read_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/gamma/rmse.csv")
+tabla_latex_rmse = df_rmse.to_latex(index=False)
+
+# Print 
+print(latex_table)
+
+print(tabla_latex_rmse)
