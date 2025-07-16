@@ -1,0 +1,226 @@
+import numpy as np
+import matplotlib . pyplot as plt
+import random
+import math
+import pandas as pd
+import scipy.stats as stat
+import scipy.optimize as opt
+
+      
+#parámetro de escala
+def weibull_alpha_i(theta, s1, s2):
+  a0 = theta[0]
+  a1 = theta[1]
+  alphai =[]
+  for i in s1:
+    alphai.append(np.exp(a0 + a1*i))
+  return np.array(alphai)
+
+#parámetro de forma
+def weibull_nu_i(theta, s1, s2):
+  b0 = theta[2]
+  b1 = theta[3]
+  nu = []
+  for i in s1:
+    nu.append(np.exp(b0 + b1*i))
+  return np.array(nu)
+
+#Funcion de distribución weibull
+def weibull_distribucion(t, theta, s1, s2): 
+  alphai = weibull_alpha_i(theta, s1, s2)
+  nui = weibull_nu_i(theta, s1, s2)
+  return stat.weibull_min.cdf(t, nui, scale = alphai)
+
+
+#Cálculo de probabilidad de fallo en el el momento de inspección IT_i
+def probabilidad_weibull(theta, IT, s1, s2): #Probabilidad de fallo para cada intervalo
+  probabilidades1 = []
+  for l in range(len(IT)):
+    probabilidades1.extend(weibull_distribucion(IT[l], theta, s1 , s2))
+  return np.array(probabilidades1)
+
+#Generación de la muestra 
+def gen_muestra_binomial_weibull(theta_0, IT, s1, s2, K, seed):
+  n_i =  []
+  pi_theta1 = probabilidad_weibull(theta_0, IT, s1, s2)
+  np.random.seed(seed)
+  for i in range(len(pi_theta1)):
+        n_i.append(np.random.binomial(K, pi_theta1[i]))
+  return np.array(n_i)
+
+#Cálculo del vector de probabilidades de fallo para la muestra
+def probabilidad_estimada(muestra, K):
+  p1 = []
+  p2 = []
+  for i in range(len(muestra)):
+    p1.append(muestra[i]/K)
+    p2.append(1 - muestra[i]/K)
+  return np.array(p1)
+
+#Divergencia de Kullback-Leibler
+def divergencia_KL(theta, IT, s1, s2, muestra, K):
+  pi_theta1 = probabilidad_weibull(theta, IT, s1, s2)
+  pi_theta2 = 1 - pi_theta1
+  p1 = probabilidad_estimada(muestra, K)
+  p2 = 1 - p1
+  div_KL = []
+  eps = 1e-10
+  
+  pi_theta1 = np.where(pi_theta1 == 0, eps, pi_theta1)
+  pi_theta2 = np.where(pi_theta2 == 0, eps, pi_theta2)
+  p1 = np.where(p1 == 0, eps, p1)
+  p2 = np.where(p2 == 0, eps, p2)
+
+  for i in range(len(muestra)):
+      div_KL.append(K*((p1[i]* np.log(p1[i]/pi_theta1[i])) + (p2[i]* np.log(p2[i]/pi_theta2[i]))))
+  return np.array(div_KL)
+
+'''
+#Divergencia de densidad de potencia en función del parámetro alpha
+def divergencia_weibull(theta, alpha, IT, s1, s2, K, muestra):
+  pi_theta1 = probabilidad_weibull(theta, IT, s1, s2)
+  pi_theta2 = 1 - pi_theta1
+  p1 = probabilidad_estimada(muestra, K)
+  p2 = 1 - p1
+  K_total = len(muestra)*K
+  div_alpha = []
+  
+  if alpha == 0:
+    for i in range(len(muestra)) :
+      div = divergencia_KL(theta, IT, s1, s2, muestra, K)
+      div_alpha.append(div)
+      
+  else:
+    for i in range(len(muestra)) :
+      div_alpha.append(K*((pi_theta1[i]**(1+ alpha) + pi_theta2[i]**(1+ alpha)) - (1 + 1/alpha)*((p1[i])*(pi_theta1[i])**alpha + (p2[i])*(pi_theta2[i])**alpha)))
+
+  div_alpha_pond = (np.sum(div_alpha))/K_total
+  return div_alpha_pond
+'''
+
+# En divergencia_weibull
+def divergencia_weibull(theta, alpha, IT, s1, s2, K, muestra):
+  eps = 1e-10 # Un epsilon pequeño
+  pi_theta1 = probabilidad_weibull(theta, IT, s1, s2)
+  
+  # APLICA EL CLIP AQUÍ
+  pi_theta1 = np.clip(pi_theta1, eps, 1.0 - eps)
+
+  pi_theta2 = 1 - pi_theta1
+  p1 = probabilidad_estimada(muestra, K)
+  p2 = 1 - p1
+  K_total = len(muestra)*K
+  
+  # El resto del código puede simplificarse usando operaciones vectoriales de numpy
+  if alpha == 0:
+    # Asegúrate de que p1 y p2 también estén protegidos si pueden ser 0
+    p1 = np.clip(p1, eps, 1.0 - eps)
+    p2 = 1.0 - p1
+    div_KL = K * (p1 * np.log(p1 / pi_theta1) + p2 * np.log(p2 / pi_theta2))
+    div_alpha_pond = np.sum(div_KL) / K_total
+  else:
+    term1 = pi_theta1**(1 + alpha) + pi_theta2**(1 + alpha)
+    term2 = (1 + 1/alpha) * (p1 * pi_theta1**alpha + p2 * pi_theta2**alpha)
+    div_alpha = K * (term1 - term2)
+    div_alpha_pond = np.sum(div_alpha) / K_total
+    
+  return div_alpha_pond
+
+# En tu función emdp (para Weibull)
+def emdp(theta_inicial, alpha, IT, s1, s2, K, muestra):
+  args = (alpha, IT, s1,s2, K,  muestra)
+  # Define límites razonables para tus parámetros theta
+  # Por ejemplo: (límite_inferior, límite_superior)
+  # Los 'None' significan sin límite.
+  bounds = [
+     (4.5, 6.0),      # a0: centrado en 5.3
+     (-0.1, 0.0),     # a1: debe incluir -0.05 y el valor contaminado -0.025
+     (-1.5, 0.0),     # b0: centrado en -0.6
+     (0.0, 0.1)       # b1: centrado en 0.03
+ ]
+  estimador = opt.minimize(divergencia_weibull, theta_inicial, args=args, 
+                           method='L-BFGS-B', # Prueba este o 'TNC'
+                           bounds=bounds)
+  # Es MUY útil verificar si la optimización fue exitosa
+  if not estimador.success:
+      print(f"La optimización falló para alpha={alpha} con el mensaje: {estimador.message}")
+  
+  return estimador.x
+
+#Simulación
+
+def simulacion(R, theta_0, theta_inicial, theta_cont, IT,s1,s2, K, alphas):
+    
+    #Se simula una muestra sin contaminar  y una muestra contaminada en función de un parámetro theta contaminado
+    #Devuelve el EMDP para la muestra sin contaminar y para la muestra contaminada, así como el RMSE de ambos estimadores.
+    
+    media_estimador =[]
+    media_estimador_cont = []
+    error_values=[]
+    error_cuadratico_values = []
+    mse_values = []
+    rmse_values = []
+    rmse_cont_values = []
+    
+    for alpha in alphas:
+      estimador = []
+      estimador_cont = []
+      
+      for j in range(R):
+          
+        #Se estima el valor del emdp para la muestra sin contaminar  
+        muestra = gen_muestra_binomial_weibull(theta_0, IT, s1, s2, K, j)
+        theta_estimador = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra)
+        estimador.append(theta_estimador)
+        
+        #Se estima el valor del emdp para la muestra contaminada
+        muestra_cont = gen_muestra_binomial_weibull(theta_cont, IT, s1, s2, K, j)
+        muestra[0] = muestra_cont[0]
+        theta_estimador_cont = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra)
+        estimador_cont.append(theta_estimador_cont)
+        
+        
+        #Se ecalcula la media del emdp sin contaminar
+      mean_estimator = np.mean(estimador, axis = 0)
+      mean_estimator_cont = np.mean(estimador_cont, axis = 0)
+      
+      #Se calcula la media del emdp contaminado
+      media_estimador.append(mean_estimator)
+      media_estimador_cont.append(mean_estimator_cont)
+
+        #Cálculo del RMSE para la muestra sin contaminar
+      error = theta_0 - mean_estimator  
+      error_cuadratico = error**2
+      mse = np.mean(error_cuadratico)
+      rmse = np.sqrt(mse)
+      #convertir a lista
+      error_values.append(error)
+      error_cuadratico_values.append(error_cuadratico)
+      mse_values.append(mse)
+      rmse_values.append(rmse)
+
+    
+      
+    return np.array(media_estimador),np.array(error_values), np.array(error_cuadratico_values), np.array(mse_values), np.array(rmse_values)
+    
+
+
+#Datos para la simulación
+R = 10 #Número de simulaciones
+IT_weibull = np.array([8,16,24]) #Instantes de inspección
+K = 100 #Número de dispositivos
+s1_weibull = np.array([30,40,50])  #niveles de estrés
+s2_weibull = np.array([0,0,0])
+#theta_0_weibull = np.array([5.3,-0.08,0.4,-0.03]) #Theta_0
+#theta_inicial_weibull = np.array([5.4,-0.09,0.4,-0.03]) #Theta inicial para la función de minimización
+#theta_cont_weibull = np.array([5.3,-0.065,0.4,-0.03])#Theta contaminada para generar la muestra contaminada
+alphas= np.array([0, 0.2, 0.4, 0.6, 0.8, 1]) #parámetros alpha de los que depende la DPD
+
+theta_0_weibull = np.array([5.3, -0.05, -0.6, 0.03])
+theta_cont_weibull = np.array([5.3, -0.025, -0.6, 0.03])
+theta_inicial_weibull = np.array([5.2, -0.06, -0.5, 0.04]) 
+
+
+media_estimador, error_values, error_cuadratico_values,mse_values, rmse_values = simulacion(R,theta_0_weibull, theta_inicial_weibull, theta_cont_weibull, IT_weibull, s1_weibull, s2_weibull, K, alphas)
+
+print(media_estimador,error_values,error_cuadratico_values, mse_values, rmse_values)
