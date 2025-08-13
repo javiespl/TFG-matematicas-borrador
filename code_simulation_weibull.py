@@ -1,374 +1,321 @@
+
 import numpy as np
-import matplotlib . pyplot as plt
-import random
-import math
+import matplotlib.pyplot as plt
 import pandas as pd
 import scipy.stats as stat
 import scipy.optimize as opt
+import os
+# --- Parámetros de la distribución Weibull ---
 
-      
-#parámetro de escala
 def weibull_alpha_i(theta, s1, s2):
+  """Calcula el parámetro de escala alpha de Weibull de forma vectorizada."""
   a0 = theta[0]
   a1 = theta[1]
-  alphai =[]
-  for i in s1:
-    alphai.append(np.exp(a0 + a1*i))
-  return np.array(alphai)
+  return np.exp(a0 + a1 * s1)
 
-#parámetro de forma
 def weibull_nu_i(theta, s1, s2):
+  """Calcula el parámetro de forma nu de Weibull de forma vectorizada."""
   b0 = theta[2]
   b1 = theta[3]
-  nu = []
-  for i in s1:
-    nu.append(np.exp(b0 + b1*i))
-  return np.array(nu)
+  return np.exp(b0 + b1 * s1)
 
-#Funcion de distribución weibull
-def weibull_distribucion(t, theta, s1, s2): 
+# --- Funciones de Probabilidad (Vectorizadas) ---
+
+def probabilidad_weibull(theta, IT, s1, s2):
+  """
+  Calcula la probabilidad de fallo para cada combinación de tiempo de inspección (IT)
+  y nivel de estrés (s1) usando broadcasting de NumPy.
+  
+  Devuelve:
+      Un array 1D con todas las probabilidades.
+  """
   alphai = weibull_alpha_i(theta, s1, s2)
   nui = weibull_nu_i(theta, s1, s2)
-  return stat.weibull_min.cdf(t, nui, scale = alphai)
+  
+  # Reshape IT a un vector columna para que NumPy haga broadcasting contra los arrays de parámetros (que son vectores fila).
+  # El resultado será una matriz de (len(IT), len(s1)).
+  IT_col = IT[:, np.newaxis]
+  
+  prob_matrix = stat.weibull_min.cdf(IT_col, nui, scale=alphai)
 
+  # Aplanamos la matriz para obtener un único vector de probabilidades
+  return prob_matrix.flatten()
 
-#Cálculo de probabilidad de fallo en el el momento de inspección IT_i
-def probabilidad_weibull(theta, IT, s1, s2): #Probabilidad de fallo para cada intervalo
-  probabilidades1 = []
-  for l in range(len(IT)):
-    probabilidades1.extend(weibull_distribucion(IT[l], theta, s1 , s2))
-  return np.array(probabilidades1)
-
-#Generación de la muestra 
-def gen_muestra_binomial_weibull(theta_0, IT, s1, s2, K, seed):
-  n_i =  []
-  pi_theta1 = probabilidad_weibull(theta_0, IT, s1, s2)
+def gen_muestra_binomial_weibull(theta, IT, s1, s2, K, seed):
+  """
+  Genera una muestra binomial de forma vectorizada.
+  
+  np.random.binomial puede tomar un array de probabilidades.
+  """
+  pi_theta = probabilidad_weibull(theta, IT, s1, s2)
   np.random.seed(seed)
-  for i in range(len(pi_theta1)):
-        n_i.append(np.random.binomial(K, pi_theta1[i]))
-  return np.array(n_i)
+  return np.random.binomial(K, pi_theta)
 
-#Cálculo del vector de probabilidades de fallo para la muestra
 def probabilidad_estimada(muestra, K):
-  p1 = []
-  p2 = []
-  for i in range(len(muestra)):
-    p1.append(muestra[i]/K)
-    p2.append(1 - muestra[i]/K)
-  return np.array(p1)
+  """Calcula el vector de probabilidades de fallo estimadas a partir de la muestra."""
+  return muestra / K
 
-#Divergencia de Kullback-Leibler
-def divergencia_KL(theta, IT, s1, s2, muestra, K):
-  pi_theta1 = probabilidad_weibull(theta, IT, s1, s2)
-  pi_theta2 = 1 - pi_theta1
-  p1 = probabilidad_estimada(muestra, K)
-  p2 = 1 - p1
-  div_KL = []
-  eps = 1e-10
-  
-  pi_theta1 = np.where(pi_theta1 == 0, eps, pi_theta1)
-  pi_theta2 = np.where(pi_theta2 == 0, eps, pi_theta2)
-  p1 = np.where(p1 == 0, eps, p1)
-  p2 = np.where(p2 == 0, eps, p2)
+# --- Funciones de Divergencia (Vectorizadas) ---
 
-  for i in range(len(muestra)):
-      div_KL.append(K*((p1[i]* np.log(p1[i]/pi_theta1[i])) + (p2[i]* np.log(p2[i]/pi_theta2[i]))))
-  return np.array(div_KL)
-
-'''
-#Divergencia de densidad de potencia en función del parámetro alpha
 def divergencia_weibull(theta, alpha, IT, s1, s2, K, muestra):
+  """
+  Calcula la divergencia de densidad de potencia (DPD).
+  El caso alpha=0 corresponde a la divergencia de Kullback-Leibler (KL).
+  """
+  eps = 1e-10  
+  
+  # Probabilidades teóricas basadas en el theta actual
   pi_theta1 = probabilidad_weibull(theta, IT, s1, s2)
+  pi_theta1 = np.clip(pi_theta1, eps, 1.0 - eps) # Asegurar que estén en [eps, 1-eps]
   pi_theta2 = 1 - pi_theta1
+  
+  # Probabilidades empíricas de la muestra
   p1 = probabilidad_estimada(muestra, K)
+  p1 = np.clip(p1, eps, 1.0 - eps)
   p2 = 1 - p1
-  K_total = len(muestra)*K
-  div_alpha = []
   
   if alpha == 0:
-    for i in range(len(muestra)) :
-      div = divergencia_KL(theta, IT, s1, s2, muestra, K)
-      div_alpha.append(div)
-      
+    # Divergencia de Kullback-Leibler 
+    div_kl = K * (p1 * np.log(p1 / pi_theta1) + p2 * np.log(p2 / pi_theta2))
+    total_divergence = np.sum(div_kl)
   else:
-    for i in range(len(muestra)) :
-      div_alpha.append(K*((pi_theta1[i]**(1+ alpha) + pi_theta2[i]**(1+ alpha)) - (1 + 1/alpha)*((p1[i])*(pi_theta1[i])**alpha + (p2[i])*(pi_theta2[i])**alpha)))
-
-  div_alpha_pond = (np.sum(div_alpha))/K_total
-  return div_alpha_pond
-'''
-
-# En divergencia_weibull
-def divergencia_weibull(theta, alpha, IT, s1, s2, K, muestra):
-  eps = 1e-10 # Un epsilon pequeño
-  pi_theta1 = probabilidad_weibull(theta, IT, s1, s2)
-  
-  # APLICA EL CLIP AQUÍ
-  pi_theta1 = np.clip(pi_theta1, eps, 1.0 - eps)
-
-  pi_theta2 = 1 - pi_theta1
-  p1 = probabilidad_estimada(muestra, K)
-  p2 = 1 - p1
-  K_total = len(muestra)*K
-  
-  # El resto del código puede simplificarse usando operaciones vectoriales de numpy
-  if alpha == 0:
-    # Asegúrate de que p1 y p2 también estén protegidos si pueden ser 0
-    p1 = np.clip(p1, eps, 1.0 - eps)
-    p2 = 1.0 - p1
-    div_KL = K * (p1 * np.log(p1 / pi_theta1) + p2 * np.log(p2 / pi_theta2))
-    div_alpha_pond = np.sum(div_KL) / K_total
-  else:
+    # Divergencia de densidad de potencia 
     term1 = pi_theta1**(1 + alpha) + pi_theta2**(1 + alpha)
     term2 = (1 + 1/alpha) * (p1 * pi_theta1**alpha + p2 * pi_theta2**alpha)
     div_alpha = K * (term1 - term2)
-    div_alpha_pond = np.sum(div_alpha) / K_total
+    total_divergence = np.sum(div_alpha)
     
-  return div_alpha_pond
+  K_total = len(muestra) * K
+  return total_divergence / K_total
 
-# En tu función emdp (para Weibull)
+# --- Estimador y Simulación ---
+
 def emdp(theta_inicial, alpha, IT, s1, s2, K, muestra):
-  args = (alpha, IT, s1,s2, K,  muestra)
-  # Define límites razonables para tus parámetros theta
-  # Por ejemplo: (límite_inferior, límite_superior)
-  # Los 'None' significan sin límite.
-  bounds = [
-     (4.5, 6.0),      # a0: centrado en 5.3
-     (-0.1, 0.0),     # a1: debe incluir -0.05 y el valor contaminado -0.025
-     (-1.5, 0.0),     # b0: centrado en -0.6
-     (0.0, 0.1)       # b1: centrado en 0.03
- ]
-  estimador = opt.minimize(divergencia_weibull, theta_inicial, args=args, 
-                           method='L-BFGS-B', # Prueba este o 'TNC'
-                           bounds=bounds)
-  # Es MUY útil verificar si la optimización fue exitosa
-  if not estimador.success:
-      print(f"La optimización falló para alpha={alpha} con el mensaje: {estimador.message}")
+  """
+  Encuentra el estimador de mínima divergencia de densidad de potencia (EMDP).
+  """
+  args = (alpha, IT, s1, s2, K, muestra)
+  # Límites para los parámetros theta para ayudar al optimizador
+  #bounds = [(4.5, 6.0),(-0.1, 0.0),(-1.5, 0.0),(0.0, 0.1)]
+  result = opt.minimize(divergencia_weibull, theta_inicial, args=args,
+                          method='Nelder-Mead')#'L-BFGS-B')#,bounds=bounds)
   
-  return estimador.x
-
-#Simulación
-
-def simulacion(R, theta_0, theta_inicial, theta_cont, IT,s1,s2, K, alphas):
-    
-    #Se simula una muestra sin contaminar  y una muestra contaminada en función de un parámetro theta contaminado
-    #Devuelve el EMDP para la muestra sin contaminar y para la muestra contaminada, así como el RMSE de ambos estimadores.
-    
-    media_estimador =[]
-    media_estimador_cont = []
-    rmse_values = []
-    rmse_cont_values = []
-    
-    for alpha in alphas:
-      estimador = []
-      estimador_cont = []
+  if not result.success:
+      print(f"ADVERTENCIA: La optimización falló para alpha={alpha} con el mensaje: {result.message}")
       
-      for j in range(R):
-          
-        #Se estima el valor del emdp para la muestra sin contaminar  
-        muestra = gen_muestra_binomial_weibull(theta_0, IT, s1, s2, K, j)
-        theta_estimador = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra)
-        estimador.append(theta_estimador)
-        
-        #Se estima el valor del emdp para la muestra contaminada
-        muestra_cont = gen_muestra_binomial_weibull(theta_cont, IT, s1, s2, K, j)
-        muestra[0] = muestra_cont[0]
-        theta_estimador_cont = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra)
-        estimador_cont.append(theta_estimador_cont)
-        
-        
-        #Se ecalcula la media del emdp sin contaminar
-      mean_estimator = np.mean(estimador, axis = 0)
-      mean_estimator_cont = np.mean(estimador_cont, axis = 0)
-      
-      #Se calcula la media del emdp contaminado
-      media_estimador.append(mean_estimator)
-      media_estimador_cont.append(mean_estimator_cont)
+  return result.x
 
-        #Cálculo del RMSE para la muestra sin contaminar
-      mse = np.mean((theta_0 - mean_estimator) ** 2)
-      rmse = np.sqrt(mse)
-      rmse_values.append(rmse)
+def simulacion(R, theta_0, theta_inicial, theta_cont, IT, s1, s2, K, alphas):
+    """
+    Realiza la simulación para estimar parámetros con y sin contaminación.
+    
+    Devuelve:
+        Tres DataFrames de pandas con los resultados.
+    """
+    num_alphas = len(alphas)
+    num_params = len(theta_0)
+    
+    # Pre-alojar arrays para guardar los resultados es más eficiente
+    estimators_clean = np.zeros((num_alphas, R, num_params))
+    estimators_cont = np.zeros((num_alphas, R, num_params))
+    
+    print("Iniciando simulación weibull...")
+    for i, alpha in enumerate(alphas):
+        print(f"Procesando alpha = {alpha} ({i+1}/{num_alphas})")
+        for j in range(R):
+            # 1. Muestra sin contaminar
+            muestra_clean = gen_muestra_binomial_weibull(theta_0, IT, s1, s2, K, seed=j)
+            estimators_clean[i, j, :] = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra_clean)
+            
+            # 2. Muestra contaminada
+            # Se genera una muestra con un theta diferente y se usa para contaminar
+            # un punto de la muestra original.
+            muestra_cont_source = gen_muestra_binomial_weibull(theta_cont, IT, s1, s2, K, seed=j)
+            muestra_contaminated = np.copy(muestra_clean)
+            muestra_contaminated[0] = muestra_cont_source[0] # Contaminamos el primer punto
+            
+            # CORRECCIÓN: Usar siempre theta_inicial como punto de partida, no theta_0
+            estimators_cont[i, j, :] = emdp(theta_0, alpha, IT, s1, s2, K, muestra_contaminated)
 
-        #Cálculo del RMSE para la muestra contamindada
-      mse_cont = np.mean((theta_0 - mean_estimator_cont) ** 2)
-      rmse_cont = np.sqrt(mse_cont)
-      rmse_cont_values.append(rmse_cont)
+    # --- Procesamiento de Resultados ---
+    
+    # Calcular medias de los estimadores para cada alpha
+    media_estimators_clean = np.mean(estimators_clean, axis=1)
+    media_estimators_cont = np.mean(estimators_cont, axis=1)
+    
+    # Calcular Error Cuadrático Medio (MSE) y RMSE
+    # MSE = mean((estimador - valor_real)^2)
+    se_clean = (estimators_clean - theta_0)**2
+    se_cont = (estimators_cont - theta_0)**2
+    
+    # Tomamos la media sobre los parámetros y las R simulaciones
+    mse_clean = np.mean(se_clean, axis=(1, 2))
+    mse_cont = np.mean(se_cont, axis=(1, 2))
+    
+    rmse_clean = np.sqrt(mse_clean)
+    rmse_cont = np.sqrt(mse_cont)
 
-    # Convert results to DataFrames
-    df_estimators = pd.DataFrame(media_estimador, columns=[f"param_{i+1}" for i in range(len(theta_0))])
+    # --- Crear DataFrames para guardar los resultados ---
+    
+    df_estimators = pd.DataFrame(media_estimators_clean, columns=[f"param_{i+1}_mean" for i in range(num_params)])
     df_estimators["alpha"] = alphas
-    df_estimators_cont = pd.DataFrame(media_estimador_cont, columns=[f"param_cont_{i+1}" for i in range(len(theta_0))])
+    
+    df_estimators_cont = pd.DataFrame(media_estimators_cont, columns=[f"param_cont_{i+1}_mean" for i in range(num_params)])
     df_estimators_cont["alpha"] = alphas
 
-    df_rmse = pd.DataFrame({"alpha": alphas, "rmse": rmse_values, "rmse_cont": rmse_cont_values})
+    df_rmse = pd.DataFrame({"alpha": alphas, "rmse_clean": rmse_clean, "rmse_cont": rmse_cont})
 
-    # Guardar en CSV
-    df_estimators.to_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/weibull/estimators.csv", index=False)
-    df_estimators_cont.to_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/weibull/estimators_cont.csv", index=False)
-    df_rmse.to_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/weibull/rmse.csv", index=False)
+    # --- Guardar en CSV (IMPORTANTE: Cambia la ruta a una válida en tu PC) ---
+    try:
+        output_path = "resultados_weibull/" # Crea una carpeta para los resultados
+        import os
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+            
+        df_estimators.to_csv(os.path.join(output_path, "estimators_clean.csv"), index=False)
+        df_estimators_cont.to_csv(os.path.join(output_path, "estimators_cont.csv"), index=False)
+        df_rmse.to_csv(os.path.join(output_path, "rmse.csv"), index=False)
+        print(f"Archivos CSV guardados en la carpeta: '{output_path}'")
+    except Exception as e:
+        print(f"Error al guardar los archivos CSV: {e}")
+        print("Asegúrate de que la ruta es correcta y tienes permisos de escritura.")
 
-    print("CSV files saved: 'estimators.csv', 'estimators_cont.csv', and 'rmse.csv'")
+    return se_clean, se_cont,df_estimators, df_estimators_cont, df_rmse
 
-    return np.array(media_estimador), np.array(media_estimador_cont), np.array(rmse_values), np.array(rmse_cont_values)
-
-
+# --- ANÁLISIS DE FIABILIDAD---
 
 
-#Datos para la simulación
-R = 1000 #Número de simulaciones
-IT_weibull = np.array([8,16,24]) #Instantes de inspección
-K = 100 #Número de dispositivos
-s1_weibull = np.array([30,40,50])  #niveles de estrés
-s2_weibull = np.array([0,0,0])
-#theta_0_weibull = np.array([5.3,-0.08,0.4,-0.03]) #Theta_0
-#theta_inicial_weibull = np.array([5.4,-0.09,0.4,-0.03]) #Theta inicial para la función de minimización
-#theta_cont_weibull = np.array([5.3,-0.065,0.4,-0.03])#Theta contaminada para generar la muestra contaminada
-alphas= np.array([0, 0.2, 0.4, 0.6, 0.8, 1]) #parámetros alpha de los que depende la DPD
+def calcular_fiabilidad(theta, IT, s1, s2):
+    """
+    Calcula la fiabilidad R(t) = 1 - F(t) de forma vectorial.
+    Reutiliza la función 'probabilidad_weibull' (que calcula el CDF).
+    
+    Devuelve:
+        Un array 1D con los valores de fiabilidad para cada tiempo en IT.
+    """
+    # probabilidad_weibull devuelve la prob. de fallo F(t) en una matriz
+    prob_fallo_matrix = probabilidad_weibull(theta, IT, s1, s2)
+    
+    # Fiabilidad R(t) = 1 - F(t)
+    fiabilidad_matrix = 1 - prob_fallo_matrix
+    
+    # Aplanamos para obtener un vector 1D, ya que s1 es un solo valor
+    return fiabilidad_matrix.flatten()
 
+def analizar_sesgo_fiabilidad(df_estimadores, theta_0, IT_test, s1_test, s2):
+    """
+    Calcula el sesgo de la fiabilidad para un conjunto de estimadores.
+    
+    Args:
+        df_estimadores (DataFrame): DataFrame con los parámetros estimados (ej. df_est_clean).
+        theta_0 (np.array): Parámetros verdaderos para calcular la fiabilidad real.
+        IT_test (np.array): Tiempos de inspección para el análisis.
+        s1_test (np.array): Nivel de estrés para el análisis.
+        s2 (np.array): Segundo nivel de estrés (dummy en este caso).
+
+    Returns:
+        DataFrame con el sesgo de la fiabilidad para cada alpha.
+    """
+    # 1. Calcular la fiabilidad verdadera una sola vez
+    fiabilidad_verdadera = calcular_fiabilidad(theta_0, IT_test, s1_test, s2)
+    
+    # 2. Extraer solo las columnas de parámetros del DataFrame
+    num_params = len(theta_0)
+    thetas_estimados = df_estimadores.iloc[:, 0:num_params]
+    
+    # 3. Aplicar la función de fiabilidad a cada fila de parámetros estimados
+    # .apply con axis=1 es ideal para operaciones por fila.
+    # result_type='expand' convierte la lista devuelta por cada fila en columnas del nuevo DataFrame.
+    fiabilidades_estimadas = thetas_estimados.apply(
+        lambda row: calcular_fiabilidad(row.values, IT_test, s1_test, s2),
+        axis=1,
+        result_type='expand'
+    )
+    
+    # 4. Calcular el sesgo (Bias = Estimado - Verdadero) de forma vectorial
+    # La resta se aplica a cada fila del DataFrame.
+    df_sesgo = fiabilidades_estimadas.subtract(fiabilidad_verdadera, axis='columns')
+    
+    # 5. Formatear el DataFrame final
+    df_sesgo.columns = [f"Bias_R(t={t})" for t in IT_test]
+    df_sesgo["alpha"] = df_estimadores["alpha"].values
+    
+    # Reordenar para que 'alpha' sea la primera columna
+    columnas_ordenadas = ["alpha"] + [col for col in df_sesgo.columns if col != "alpha"]
+    return df_sesgo[columnas_ordenadas]
+
+# --- DATOS PARA LA SIMULACIÓN Y EL ANÁLISIS ---
+
+# Parámetros de simulación
+R = 1000
+K = 100
+IT_weibull = np.array([8, 16, 24])
+s1_weibull = np.array([30, 40, 50])
+s2_weibull = np.array([0]) # s2 no se usa, pero la función lo espera
+alphas = np.array([0, 0.2, 0.4, 0.6, 0.8, 1])
+
+# Parámetros del modelo
 theta_0_weibull = np.array([5.3, -0.05, -0.6, 0.03])
 theta_cont_weibull = np.array([5.3, -0.025, -0.6, 0.03])
-theta_inicial_weibull = np.array([5.2, -0.06, -0.5, 0.04]) 
+theta_inicial_weibull = np.array([5.2, -0.06, -0.5, 0.04])
+
+# --- EJECUCIÓN ---
+
+# 1. Ejecutar la simulación principal
+se_clean, se_cont,df_est_clean, df_est_cont, df_rmse = simulacion(
+    R, theta_0_weibull, theta_inicial_weibull, theta_cont_weibull,
+    IT_weibull, s1_weibull, s2_weibull, K, alphas
+)
+
+# 2. Realizar el análisis de fiabilidad
+print("\n--- Iniciando Análisis de Fiabilidad ---")
+
+# Parámetros para el test de fiabilidad
+IT_test = np.array([25,30,35])
+s1_test = np.array([40]) # El nivel de estrés de prueba, como array
+
+# Analizar resultados de la muestra limpia
+df_sesgo_clean = analizar_sesgo_fiabilidad(
+    df_est_clean, theta_0_weibull, IT_test, s1_test, s2_weibull
+)
+
+# Analizar resultados de la muestra contaminada
+df_sesgo_cont = analizar_sesgo_fiabilidad(
+    df_est_cont, theta_0_weibull, IT_test, s1_test, s2_weibull
+)
+
+# Guardar los resultados del sesgo en archivos CSV
+output_path = "resultados_weibull/"
+df_sesgo_clean.to_csv(os.path.join(output_path, "fiabilidad_sesgo_clean.csv"), index=False)
+df_sesgo_cont.to_csv(os.path.join(output_path, "fiabilidad_sesgo_cont.csv"), index=False)
+print(f"Archivos CSV de sesgo de fiabilidad guardados en '{output_path}'")
+
+# 3. Generar Tablas LaTeX para el informe
+
+# Combinar los resultados de sesgo en una sola tabla
+df_sesgo_cont_sin_alpha = df_sesgo_cont.drop('alpha', axis=1)
+df_sesgo_combinado = pd.concat([df_sesgo_clean, df_sesgo_cont_sin_alpha], axis=1)
+
+# Generar código LaTeX
+latex_table_sesgo = df_sesgo_combinado.to_latex(index=False, float_format="%.4f")
+latex_table_rmse = df_rmse.to_latex(index=False, float_format="%.4f")
+
+# Imprimir resultados finales
+print("\n--- Resultados de la Simulación ---")
+print("\nValores medios de los estimadores (Muestra Limpia):")
+print(df_est_clean)
+print("\nValores medios de los estimadores (Muestra Contaminada):")
+print(df_est_cont)
 
 
-media_estimador_weibull, media_estimador_cont_weibull, rmse_values_weibull, rmse_cont_values_weibull = simulacion(R,theta_0_weibull, theta_inicial_weibull, theta_cont_weibull, IT_weibull, s1_weibull, s2_weibull, K, alphas)
+print("\n--- Resultados del Análisis de Fiabilidad (Sesgo) ---")
+print("\nSesgo para Muestra Limpia:")
+print(df_sesgo_clean)
+print("\nSesgo para Muestra Contaminada:")
+print(df_sesgo_cont)
 
-##################################################
-
-
-#Cálculo de la fiabilidad
-
-IT1 = np.array([8,16,24])
-
-
-s_prueba = 40
-
-def distribucion1(t, theta,s): #Función de distribución 
-
-  a0 = theta[0]
-  a1 = theta[1]
-  b0 = theta[2]
-  b1 = theta[3]
-
-  alphai =np.exp(a0 + a1*s_prueba)
-  nui =np.exp(b0 + b1*s_prueba)
-
-  return stat.weibull_min.cdf(t, nui, scale = alphai)
-
-def params(theta):
-  a0 = theta[0]
-  a1 = theta[1]
-  b0 = theta[2]
-  b1 = theta[3]
-
-  alphai =np.exp(a0 + a1*s_prueba)
-  nui =np.exp(b0 + b1*s_prueba)
-  
-  return  alphai, nui
-
-def fiabilidad(theta, IT, s): #Probabilidad de fallo para cada intervalo
-
-
-  probabilidades1 = []
-  probabilidades2 = []
-
-  for l in range(len(IT)):
-
-    probabilidades1.append(distribucion1(IT[l], theta, s))
-    probabilidades2.append(1 - distribucion1(IT[l], theta, s))
-
-
-  return np.array(probabilidades2)
-
-lista_probs = fiabilidad(theta_0_weibull, IT1, s_prueba)
-
-df = pd.read_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/weibull/estimators.csv")  
-results_list = []
-
-for index, row in df.iterrows():
-    theta = row[0:4].values  # Extract the 4 estimated parameters from each row
-    alpha_value = row.iloc[-1]  # Extract alpha value
-
-    prob_vector = fiabilidad(theta, IT1, s_prueba)  # Compute fiabilidad function
-
-    # Store results in a dictionary format
-    results_list.append([alpha_value] + prob_vector.tolist())
-
-columns = ["alpha"] + [f"R{IT1[i]}" for i in range(len(IT1))]
-columnas = [f"R{IT1[i]}" for i in range(len(IT1))]
-results_df1 = pd.DataFrame(results_list, columns=columns)
-for i, col in enumerate(columnas):
-    results_df1[col] = results_df1[col] - lista_probs[i]
-# Step 6: Save results to a separate CSV file
-results_df1.to_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/weibull/fiabilidad_results.csv", index=False)
-
-
-# Print confirmation
-print("Results saved in 'fiabilidad_results.csv'.")
-
-df = pd.read_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/weibull/estimators_cont.csv")  # Replace with the actual CSV file path
-results_list = []
-
-for index, row in df.iterrows():
-    theta = row[0:4].values  # Extract the 4 estimated parameters from each row
-    alpha_value = row.iloc[-1]  # Extract alpha value
-
-    prob_vector = fiabilidad(theta, IT1, s_prueba)  # Compute fiabilidad function
-
-    # Store results in a dictionary format
-    results_list.append([alpha_value] + prob_vector.tolist())
-
-columns = ["alpha"] + [f"R{IT1[i]}" for i in range(len(IT1))]
-columnas = [f"R{IT1[i]}" for i in range(len(IT1))]
-results_df2 = pd.DataFrame(results_list, columns=columns)
-for i, col in enumerate(columnas):
-    results_df2[col] = results_df2[col] - lista_probs[i]
-
-
-# Step 6: Save results to a separate CSV file
-results_df2.to_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/weibull/fiabilidad_results_cont.csv", index=False)
-df2_sin_primera = results_df2.iloc[:, 1:]
-
-df_combinado = pd.concat([results_df1, df2_sin_primera], axis=1)
-latex_table=df_combinado.to_latex(index=False)
-df_rmse = pd.read_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/weibull/rmse.csv")
-tabla_latex_rmse = df_rmse.to_latex(index=False)
-
-# Print confirmation
-print("Results saved in 'fiabilidad_results_cont.csv'.")
-print(latex_table)
-
-print(tabla_latex_rmse)
-
-
-'''
-
-#PLOTS
-
-print(weibull_alpha_i(theta_cont_weibull, s1_weibull, s2_weibull))
-print(weibull_nu_i(theta_cont_weibull, s1_weibull, s2_weibull))
-#[18.17414537  8.16616991  3.66929667]
-#[0.60653066 0.44932896 0.33287108]
-
-
-#cont
-#[28.50273364 14.87973172  7.76790111]
-#[0.60653066 0.44932896 0.33287108]
-
-x = np.linspace(0, 40, 1000)
-
-scale,c = 7.76790111,0.33287108 #params(theta_0_weibull)
-
-cdf = stat.weibull_min.cdf(x,c, scale = scale)#distribucion1(x,theta_0_weibull,s_prueba)
-
-# Crear el gráfico
-plt.plot(x, cdf, label=f'Weibull(c={c}, scale={scale})')
-plt.title('Distribución Weibull')
-plt.xlabel('x')
-plt.ylabel('Densidad de probabilidad')
-plt.grid(True)
-plt.legend()
-plt.show()
-
-print(probabilidad_weibull(theta_0_weibull, IT_weibull, s1_weibull, s2_weibull))
-'''
+print("\n--- Tablas LaTeX Generadas ---")
+print("\nTabla de Sesgo de Fiabilidad:")
+print(latex_table_sesgo)
+print("\nTabla de RMSE:")
+print(latex_table_rmse)
