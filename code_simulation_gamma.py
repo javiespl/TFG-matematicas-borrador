@@ -1,293 +1,315 @@
 import numpy as np
-import matplotlib . pyplot as plt
-import random
-import math
+import matplotlib.pyplot as plt
 import pandas as pd
 import scipy.stats as stat
 import scipy.optimize as opt
+import os
 
+# --- Parámetros de la distribución Gamma ---
 
-#parámetro de forma     
 def gamma_alpha_i(theta, s1, s2):
-  a0 = theta[0]
-  a1 = theta[1]
-  a2 = theta[2]
-  alphai =[]
-  for i in s1:
-      for j in s2:
-          alphai.append( np.exp(a0 + a1*i +a2*j))
-  return np.array(alphai)
+  """Calcula el parámetro de forma alpha de Gamma."""
+  a0, a1, a2 = theta[0], theta[1], theta[2]
+  S1, S2 = np.meshgrid(s1, s2, indexing='ij')
+  return np.exp(a0 + a1 * S1 + a2 * S2).flatten()
 
-#parámetro de escala
 def gamma_lambda_i(theta, s1, s2):
-  b0 = theta[3]
-  b1 = theta[4]
-  b2 = theta[5]
-  lambdai = []
-  for i in s1:
-      for j in s2:
-          lambdai.append(np.exp(b0 + b1*i +b2*j))
-  return np.array(lambdai)
+  """Calcula el parámetro de escala lambda (1/tasa) de Gamma."""
+  b0, b1, b2 = theta[3], theta[4], theta[5]
+  S1, S2 = np.meshgrid(s1, s2, indexing='ij')
+  return np.exp(b0 + b1 * S1 + b2 * S2).flatten()
 
-#print(gamma_alpha_i(theta_0_gamma, s1_gamma, s2_gamma))
-#print(gamma_lambda_i(theta_0_gamma, s1_gamma, s2_gamma))
-#Funcion de distribución gamma
-def gamma_distribucion(t, theta, s1, s2):
+# --- Funciones de Probabilidad (Vectorizadas) ---
+
+def probabilidad_gamma(theta, IT, s1, s2):
+  """
+  Calcula la probabilidad de fallo para cada combinación de tiempo de inspección (IT) y niveles de estrés (s1, s2).
+  """
   alphai = gamma_alpha_i(theta, s1, s2)
   lambdai = gamma_lambda_i(theta, s1, s2)
-  return stat.gamma.cdf(t, alphai, scale = lambdai)
-    
-#Cálculo de probabilidad de fallo en el el momento de inspección IT_i
-def probabilidad_gamma(theta, IT, s1, s2):
-  probabilidades1 = []
-  for l in range(len(IT)):
-    probabilidades1.extend(gamma_distribucion(IT[l], theta, s1 , s2))
-  return np.array(probabilidades1)
+  
+  # Reshape IT a un vector columna (n, 1) para que NumPy haga broadcasting contra los arrays de parámetros (que son vectores fila de tamaño m).
+  # El resultado es una matriz de probabilidades de forma (n, m).
+  IT_col = IT[:, np.newaxis]
+ 
+  prob_matrix = stat.gamma.cdf(IT_col, a=alphai, scale=lambdai)
+  
+  # Aplanamos la matriz para obtener un único vector de probabilidades,
+  # que coincide con el formato del código original.
+  return prob_matrix.flatten()
 
-#print(probabilidad_gamma_sin_contaminar(theta_0_gamma, IT_gamma, s1_gamma, s2_gamma))
-
-#Generación de la muestra 
-def gen_muestra_binomial_gamma(theta_0, IT, s1, s2, K, seed):
-  n_i =  []
-  pi_theta1 = probabilidad_gamma(theta_0, IT, s1, s2)
+def gen_muestra_binomial_gamma(theta, IT, s1, s2, K, seed):
+  """Genera una muestra binomial."""
+  pi_theta = probabilidad_gamma(theta, IT, s1, s2)
   np.random.seed(seed)
-  for i in range(len(pi_theta1)):
-        n_i.append(np.random.binomial(K, pi_theta1[i]))
-  return np.array(n_i)
+  return np.random.binomial(K, pi_theta)
 
-#Cálculo del vector de probabilidades de fallo para la muestra
 def probabilidad_estimada(muestra, K):
-  p1 = []
-  p2 = []
-  for i in range(len(muestra)):
-    p1.append(muestra[i]/K)
-    p2.append(1 - muestra[i]/K)
-  return np.array(p1)
+  """Calcula el vector de probabilidades de fallo estimadas a partir de la muestra."""
+  return muestra / K
 
-#Divergencia de Kullback-Leibler
-def divergencia_KL(pi_theta1, pi_theta2, p1, p2, theta, IT, s1, s2, muestra, K):
-  pi_theta1 = probabilidad_gamma(theta, IT, s1, s2)
-  pi_theta2 = 1 - pi_theta1
-  p1 = probabilidad_estimada(muestra, K)
-  p2 = 1 - p1
-  div_KL = []
-  
-  eps = 1e-10
-  
-  pi_theta1 = np.where(pi_theta1 == 0, eps, pi_theta1)
-  pi_theta2 = np.where(pi_theta2 == 0, eps, pi_theta2)
-  p1 = np.where(p1 == 0, eps, p1)
-  p2 = np.where(p2 == 0, eps, p2)
+# --- Funciones de Divergencia (Vectorizadas) ---
 
-  for i in range(len(muestra)):
-      div_KL.append(K*((p1[i]* np.log(p1[i]/pi_theta1[i])) + (p2[i]* np.log(p2[i]/pi_theta2[i]))))
-  return np.array(div_KL)
-
-#Divergencia de densidad de potencia en función del parámetro alpha
 def divergencia_gamma(theta, alpha, IT, s1, s2, K, muestra):
+  """
+  Calcula la divergencia de densidad de potencia (DPD) de forma vectorizada.
+  El caso alpha=0 corresponde a la divergencia de Kullback-Leibler (KL).
+  """
+  eps = 1e-10  
+
+  # Probabilidades teóricas
   pi_theta1 = probabilidad_gamma(theta, IT, s1, s2)
+  pi_theta1 = np.clip(pi_theta1, eps, 1.0 - eps) 
   pi_theta2 = 1 - pi_theta1
+  
+  # Probabilidades empíricas de la muestra
   p1 = probabilidad_estimada(muestra, K)
+  p1 = np.clip(p1, eps, 1.0 - eps)
   p2 = 1 - p1
-  K_total = len(muestra)*K
-  div_alpha = []
   
   if alpha == 0:
-    for i in range(len(muestra)) :
-        div = divergencia_KL(pi_theta1, pi_theta2, p1, p2, theta, IT, s1, s2, muestra, K)
-        div_alpha.append(div)
- 
+    # Divergencia de Kullback-Leibler 
+    div_kl_vector = K * (p1 * np.log(p1 / pi_theta1) + p2 * np.log(p2 / pi_theta2))
+    total_divergence = np.sum(div_kl_vector)
   else:
-    for i in range(len(muestra)) :
-        div_alpha.append(K*((pi_theta1[i]**(1+ alpha) + pi_theta2[i]**(1+ alpha)) - (1 + 1/alpha)*((p1[i])*(pi_theta1[i])**alpha + (p2[i])*(pi_theta2[i])**alpha)))
-  
-  div_alpha_pond = (np.sum(div_alpha))/K_total
-  return div_alpha_pond
+    # Divergencia de densidad de potencia (vectorizada)
+    term1 = pi_theta1**(1 + alpha) + pi_theta2**(1 + alpha)
+    term2 = (1 + 1/alpha) * (p1 * pi_theta1**alpha + p2 * pi_theta2**alpha)
+    div_alpha_vector = K * (term1 - term2)
+    total_divergence = np.sum(div_alpha_vector)
+    
+  # Se pondera por el número total de observaciones
+  K_total = len(muestra) * K
+  return total_divergence / K_total
 
-#Cálculo del EMDP
+# --- Estimador y Simulación ---
+
 def emdp(theta_inicial, alpha, IT, s1, s2, K, muestra):
-  args = (alpha, IT, s1,s2, K,  muestra)
-  #bounds = [(5, 5.6),(-0.1, 1e-3), (-1, 1e-3),(-0.1, 1e-3)]
-  #bounds = [(1e-3, None),(None, -1e-3),(None, -1e-3),(None, -1e-3),(1e-3, None),(None, -1e-3)]
-  #6.5, -0.06,-0.06, -0.5, 0.065,-0.01
-  estimador = opt.minimize(divergencia_gamma, theta_inicial, args=args,  method = 'Nelder-Mead') # #L-BFGS-BNelder-Mead # bounds = bounds,
-  return estimador.x
-
-
-#Simulación
-
-def simulacion(R, theta_0, theta_inicial, theta_cont, IT,s1,s2, K, alphas):
-    #Se simula una muestra sin contaminar y una muestra contaminada en función de un parámetro theta contaminado para la primera celda
-    #Devuelve el EMDP para la muestra sin contaminar y para la muestra contaminada, así como el RMSE de ambos estimadores.
-    
-    media_estimador =[]
-    media_estimador_cont = []
-    rmse_values = []
-    rmse_cont_values = []
-    
-    for alpha in alphas:
-      estimador = []
-      estimador_cont = []
+  """Encuentra el estimador de mínima divergencia de densidad de potencia (EMDP)."""
+  args = (alpha, IT, s1, s2, K, muestra)
+  options = {'maxfev':5000}
+  result = opt.minimize(divergencia_gamma, theta_inicial, args=args, method='Nelder-Mead',options=options)
+  
+  if not result.success:
+      print(f"ADVERTENCIA: La optimización falló para alpha={alpha} con el mensaje: {result.message}")
       
-      for j in range(R):
-          
-        #Se estima el valor del emdp para la muestra sin contaminar  
-        muestra = gen_muestra_binomial_gamma(theta_0, IT, s1, s2, K, j)
-        theta_estimador = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra)
-        estimador.append(theta_estimador)
-        
-        #Se estima el valor del emdp para la muestra contaminada
-        muestra_cont = gen_muestra_binomial_gamma(theta_cont, IT, s1, s2, K, j)
-        muestra[0] = muestra_cont[0]
-        theta_estimador_cont = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra)
-        estimador_cont.append(theta_estimador_cont)
+  return result.x
 
-        #Se ecalcula la media del emdp sin contaminar
-      mean_estimator = np.mean(estimador, axis = 0)
-      mean_estimator_cont = np.mean(estimador_cont, axis = 0)
-      
-      #Se calcula la media del emdp contaminado
-      media_estimador.append(mean_estimator)
-      media_estimador_cont.append(mean_estimator_cont)
+def simulacion(R, theta_0, theta_inicial, theta_cont, IT, s1, s2, K, alphas):
+    """
+    Realiza la simulación para estimar parámetros con y sin contaminación.
+   
+    Devuelve:
+       Tres DataFrames de pandas con los resultados.
+    """
+    num_alphas = len(alphas)
+    num_params = len(theta_0)
+    estimators_clean = np.zeros((num_alphas, R, num_params))
+    estimators_cont = np.zeros((num_alphas, R, num_params))
+    
+    print("Iniciando simulación Gamma...")
+    for i, alpha in enumerate(alphas):
+        print(f"Procesando alpha = {alpha} ({i+1}/{num_alphas})")
+        for j in range(R):
+            # 1. Muestra sin contaminar
+            muestra_clean = gen_muestra_binomial_gamma(theta_0, IT, s1, s2, K, seed=j)
+            estimators_clean[i, j, :] = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra_clean)
+            
+            # 2. Muestra contaminada
+            # Se genera una muestra con un theta diferente y se usa para contaminar el primer punto.
+            muestra_cont_source = gen_muestra_binomial_gamma(theta_cont, IT, s1, s2, K, seed=j)
+            muestra_contaminated = np.copy(muestra_clean)
+            muestra_contaminated[0] = muestra_cont_source[0] # Contaminamos solo el primer punto
+            
+            estimators_cont[i, j, :] = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra_contaminated)
 
-        #Cálculo del RMSE para la muestra sin contaminar
-      mse = np.mean((theta_0 - mean_estimator) ** 2)
-      rmse = np.sqrt(mse)
-      rmse_values.append(rmse)
+    # --- Procesamiento de Resultados (Vectorizado) ---
+    
+    # Calcular medias de los estimadores para cada alpha
+    media_estimators_clean = np.mean(estimators_clean, axis=1)
+    media_estimators_cont = np.mean(estimators_cont, axis=1)
+    
+    # Calcular Error Cuadrático (SE) y luego RMSE
+    # SE = (estimador - valor_real)^2
+    # La resta se hace elemento a elemento gracias a broadcasting
+    se_clean = (estimators_clean - theta_0)**2
+    se_cont = (estimators_cont - theta_0)**2
+    
+    # MSE = Media de los SE. Tomamos la media sobre las R simulaciones (axis=1) y los parámetros (axis=2)
+    mse_clean = np.mean(se_clean, axis=(1, 2))
+    mse_cont = np.mean(se_cont, axis=(1, 2))
+    
+    rmse_clean = np.sqrt(mse_clean)
+    rmse_cont = np.sqrt(mse_cont)
 
-        #Cálculo del RMSE para la muestra contamindada
-      mse_cont = np.mean((theta_0 - mean_estimator_cont) ** 2)
-      rmse_cont = np.sqrt(mse_cont)
-      rmse_cont_values.append(rmse_cont)
-
-   # Convertir a DataFrames
-    df_estimators = pd.DataFrame(media_estimador, columns=[f"param_{i+1}" for i in range(len(theta_0))])
+    # --- Crear DataFrames para guardar los resultados ---
+    
+    df_estimators = pd.DataFrame(media_estimators_clean, columns=[f"param_{i+1}_mean" for i in range(num_params)])
     df_estimators["alpha"] = alphas
-    df_estimators_cont = pd.DataFrame(media_estimador_cont, columns=[f"param_cont_{i+1}" for i in range(len(theta_0))])
+    
+    df_estimators_cont = pd.DataFrame(media_estimators_cont, columns=[f"param_cont_{i+1}_mean" for i in range(num_params)])
     df_estimators_cont["alpha"] = alphas
 
-    df_rmse = pd.DataFrame({"alpha": alphas, "rmse": rmse_values, "rmse_cont": rmse_cont_values})
+    df_rmse = pd.DataFrame({"alpha": alphas, "rmse_clean": rmse_clean, "rmse_cont": rmse_cont})
 
-    # Guardar en CSV
-    df_estimators.to_csv("estimators.csv", index=False)
-    df_estimators_cont.to_csv("estimators_cont.csv", index=False)
-    df_rmse.to_csv("rmse.csv", index=False)
-    print("CSV files saved: 'estimators.csv', 'estimators_cont.csv', and 'rmse.csv'")
-    return np.array(media_estimador), np.array(media_estimador_cont), np.array(rmse_values), np.array(rmse_cont_values)
+    # --- Guardar en CSV ---
+    try:
+        output_path = "resultados_gamma/"
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+            
+        df_estimators.to_csv(os.path.join(output_path, "estimators_clean.csv"), index=False)
+        df_estimators_cont.to_csv(os.path.join(output_path, "estimators_cont.csv"), index=False)
+        df_rmse.to_csv(os.path.join(output_path, "rmse.csv"), index=False)
+        print(f"Archivos CSV guardados en la carpeta: '{output_path}'")
+    except Exception as e:
+        print(f"Error al guardar los archivos CSV: {e}")
+
+    return df_estimators, df_estimators_cont, df_rmse
+
+# --- ANÁLISIS DE FIABILIDAD---
 
 
-R= 1000
-IT_gamma = np.array([16,24,32])
+def calcular_fiabilidad(theta, IT, s1, s2):
+    """
+    Calcula la fiabilidad R(t) = 1 - F(t) de forma vectorial.
+    Reutiliza la función 'probabilidad_gamma' (que calcula el CDF).
+    
+    Devuelve:
+        Un array 1D con los valores de fiabilidad para cada tiempo en IT.
+    """
+    # probabilidad_lognorm devuelve la prob. de fallo F(t) en una matriz
+    prob_fallo_matrix = probabilidad_gamma(theta, IT, s1, s2)
+    
+    # Fiabilidad R(t) = 1 - F(t)
+    fiabilidad_matrix = 1 - prob_fallo_matrix
+    
+    # Aplanamos para obtener un vector 1D, ya que s1 es un solo valor
+    return fiabilidad_matrix.flatten()
+
+def analizar_sesgo_fiabilidad(df_estimadores, theta_0, IT_test, s1_test, s2_test):
+    """
+    Calcula el sesgo de la fiabilidad para un conjunto de estimadores.
+    
+    Args:
+        df_estimadores (DataFrame): DataFrame con los parámetros estimados (ej. df_est_clean).
+        theta_0 (np.array): Parámetros verdaderos para calcular la fiabilidad real.
+        IT_test (np.array): Tiempos de inspección para el análisis.
+        s1_test (np.array): Nivel de estrés para el análisis.
+        s2 (np.array): Segundo nivel de estrés (dummy en este caso).
+
+    Returns:
+        DataFrame con el sesgo de la fiabilidad para cada alpha.
+    """
+    # 1. Calcular la fiabilidad verdadera una sola vez
+    fiabilidad_verdadera = calcular_fiabilidad(theta_0, IT_test, s1_test, s2_test)
+    
+    # 2. Extraer solo las columnas de parámetros del DataFrame
+    num_params = len(theta_0)
+    thetas_estimados = df_estimadores.iloc[:, 0:num_params]
+    
+    # 3. Aplicar la función de fiabilidad a cada fila de parámetros estimados
+    # .apply con axis=1 es ideal para operaciones por fila.
+    # result_type='expand' convierte la lista devuelta por cada fila en columnas del nuevo DataFrame.
+    fiabilidades_estimadas = thetas_estimados.apply(
+        lambda row: calcular_fiabilidad(row.values, IT_test, s1_test, s2_test),
+        axis=1,
+        result_type='expand'
+    )
+    
+    # 4. Calcular el sesgo (Bias = Estimado - Verdadero) de forma vectorial
+    # La resta se aplica a cada fila del DataFrame.
+    df_sesgo = fiabilidades_estimadas.subtract(fiabilidad_verdadera, axis='columns')
+    
+    # 5. Formatear el DataFrame final
+    df_sesgo.columns = [f"Bias_R(t={t})" for t in IT_test]
+    df_sesgo["alpha"] = df_estimadores["alpha"].values
+    
+    # Reordenar para que 'alpha' sea la primera columna
+    columnas_ordenadas = ["alpha"] + [col for col in df_sesgo.columns if col != "alpha"]
+    return df_sesgo[columnas_ordenadas]#, fiabilidad_verdadera, fiabilidades_estimadas
+
+# --- DATOS PARA LA SIMULACIÓN Y EL ANÁLISIS ---
+
+# Parámetros de simulación
+R = 1000
 K = 100
-s1_gamma = np.array([30,40])
-s2_gamma = np.array([40,50])
-#theta_0_gamma = np.array([4.5, -0.065, -0.46, 0.05])
-theta_0_gamma = np.array([6.5, -0.06,-0.06, -0.5, 0.065,-0.01])
-#theta_inicial_gamma = np.array([4.40, -0.065 ,-0.46, 0.05])
-theta_inicial_gamma = np.array([6.3, -0.065,-0.06, -0.5, 0.065,-0.01])
-#theta_cont_gamma = np.array([4.5, -0.07 ,-0.46, 0.05])
-theta_cont_gamma = np.array([6.5, -0.045,-0.06, -0.5, 0.065,-0.01])
-alphas= np.array([0, 0.2, 0.4, 0.6, 0.8, 1])
+IT_gamma = np.array([16, 24, 32])
+s1_gamma = np.array([30, 40])
+s2_gamma = np.array([40, 50])
+alphas = np.array([0, 0.2, 0.4, 0.6, 0.8, 1])
 
-media_estimador_gamma, media_estimador_cont_gamma, rmse_values_gamma, rmse_cont_values_gamma = simulacion(R,theta_0_gamma, theta_inicial_gamma, theta_cont_gamma, IT_gamma, s1_gamma, s2_gamma, K, alphas)
+# Parámetros del modelo
+theta_0_gamma = np.array([6.5, -0.06, -0.06, -0.5, 0.065, -0.01])
+theta_inicial_gamma = np.array([6.3, -0.065, -0.06, -0.5, 0.065, -0.01])
+theta_cont_gamma = np.array([6.5, -0.045, -0.06, -0.5, 0.065, -0.01])
 
-#Cálculo de la fiabilidad
+# --- EJECUCIÓN ---
 
+# 1. Ejecutar la simulación principal
+df_est_clean, df_est_cont, df_rmse = simulacion(
+    R, theta_0_gamma, theta_inicial_gamma, theta_cont_gamma,
+    IT_gamma, s1_gamma, s2_gamma, K, alphas
+)
 
-IT1 = np.array([10,20,30])
+# 2. Realizar el análisis de fiabilidad
+print("\n--- Iniciando Análisis de Fiabilidad ---")
 
+# Parámetros para el test de fiabilidad
+IT_test = np.array([16, 24, 32])
+s1_test = np.array([30]) # El nivel de estrés de prueba, como array
+s2_test = np.array([40])
 
-s_prueba = [25,30]
+# Analizar resultados de la muestra limpia
+df_sesgo_clean = analizar_sesgo_fiabilidad(
+    df_est_clean, theta_0_gamma, IT_test, s1_test, s2_test
+)
 
-def distribucion1(t, theta,s): #Función de distribucion gamma
+# Analizar resultados de la muestra contaminada
+df_sesgo_cont = analizar_sesgo_fiabilidad(
+    df_est_cont, theta_0_gamma, IT_test, s1_test, s2_test
+)
 
-  a0 = theta[0]
-  a1 = theta[1]
-  a2 = theta[2]
-  b0 = theta[3]
-  b1 = theta[4]
-  b2 = theta[5]
-  
-  lambdai =np.exp(a0 + a1*s_prueba[0]+a2*s_prueba[1])
-  sigmai =np.exp(b0 + b1*s_prueba[0]+b2*s_prueba[1])
+# Guardar los resultados del sesgo en archivos CSV
+output_path = "resultados_gamma/"
+df_sesgo_clean.to_csv(os.path.join(output_path, "fiabilidad_sesgo_clean.csv"), index=False)
+df_sesgo_cont.to_csv(os.path.join(output_path, "fiabilidad_sesgo_cont.csv"), index=False)
+print(f"Archivos CSV de sesgo de fiabilidad guardados en '{output_path}'")
 
-  return stat.gamma.cdf(t, sigmai, scale = lambdai)
+# 3. Generar Tablas LaTeX para el informe
 
-def fiabilidad(theta, IT, s): #Probabilidad de fallo para cada intervalo
+# Combinar los resultados de sesgo en una sola tabla
+df_sesgo_cont_sin_alpha = df_sesgo_cont.drop('alpha', axis=1)
+df_sesgo_combinado = pd.concat([df_sesgo_clean, df_sesgo_cont_sin_alpha], axis=1)
 
+# Generar código LaTeX
+latex_table_sesgo = df_sesgo_combinado.to_latex(index=False, float_format="%.4f")
+latex_table_rmse = df_rmse.to_latex(index=False, float_format="%.4f")
 
-  probabilidades1 = []
-  probabilidades2 = []
-
-  for l in range(len(IT)):
-
-    probabilidades1.append(distribucion1(IT[l], theta, s))
-    probabilidades2.append(1 - distribucion1(IT[l], theta, s))
-
-
-  return np.array(probabilidades2)
-
-lista_probs = fiabilidad(theta_0_gamma, IT1, s_prueba)
-
-df = pd.read_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/gamma/estimators.csv")  # Replace with the actual CSV file path
-results_list = []
-
-for index, row in df.iterrows():
-    theta = row[0:6].values  # Extract the 4 estimated parameters from each row
-    alpha_value = row.iloc[-1]  # Extract alpha value
-
-    prob_vector = fiabilidad(theta, IT1, s_prueba)  # Compute fiabilidad function
-
-    # Store results in a dictionary format
-    results_list.append([alpha_value] + prob_vector.tolist())
-
-columns = ["alpha"] + [f"R{IT1[i]}" for i in range(len(IT1))]
-columnas = [f"R{IT1[i]}" for i in range(len(IT1))]
-results_df1 = pd.DataFrame(results_list, columns=columns)
-for i, col in enumerate(columnas):
-    results_df1[col] = results_df1[col] - lista_probs[i]
-# Step 6: Save results to a separate CSV file
-results_df1.to_csv("fiabilidad_results.csv", index=False)
-
-# Print confirmation
-print("Results saved in 'fiabilidad_results.csv'.")
-
-df = pd.read_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/gamma/estimators_cont.csv")  # Replace with the actual CSV file path
-results_list = []
-
-for index, row in df.iterrows():
-    theta = row[0:6].values  # Extract the 4 estimated parameters from each row
-    alpha_value = row.iloc[-1]  # Extract alpha value
-
-    prob_vector = fiabilidad(theta, IT1, s_prueba)  # Compute fiabilidad function
-
-    # Store results in a dictionary format
-    results_list.append([alpha_value] + prob_vector.tolist())
-
-columns = ["alpha"] + [f"R{IT1[i]}" for i in range(len(IT1))]
-columnas = [f"R{IT1[i]}" for i in range(len(IT1))]
-results_df2 = pd.DataFrame(results_list, columns=columns)
-for i, col in enumerate(columnas):
-    results_df2[col] = results_df2[col] - lista_probs[i]
+# Imprimir resultados finales
+print("\n--- Resultados de la Simulación ---")
+print("\nValores medios de los estimadores (Muestra Limpia):")
+print(df_est_clean)
+print("\nValores medios de los estimadores (Muestra Contaminada):")
+print(df_est_cont)
 
 
-# Step 6: Save results to a separate CSV file
-results_df2.to_csv("fiabilidad_results_cont.csv", index=False)
+print("\n--- Resultados del Análisis de Fiabilidad (Sesgo) ---")
+print("\nSesgo para Muestra Limpia:")
+print(df_sesgo_clean)
+print("\nSesgo para Muestra Contaminada:")
+print(df_sesgo_cont)
 
-df2_sin_primera = results_df2.iloc[:, 1:]
+print("\n--- Tablas LaTeX Generadas ---")
+print("\nTabla de Sesgo de Fiabilidad:")
+print(latex_table_sesgo)
+print("\nTabla de RMSE:")
+print(latex_table_rmse)
 
-# Print confirmation
-print("Results saved in 'fiabilidad_results_cont.csv'.")
-
-
-
-
-df_combinado = pd.concat([results_df1, df2_sin_primera], axis=1)
-latex_table=df_combinado.to_latex(index=False)
-df_rmse = pd.read_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/gamma/rmse.csv")
-tabla_latex_rmse = df_rmse.to_latex(index=False)
-
-# Print 
-print(latex_table)
-
-print(tabla_latex_rmse)
+print("\n--- Analizando la ubicación de IT_test en la distribución ---")
+fiabilidad_verdadera_test = 1 - probabilidad_gamma(theta_0_gamma, IT_test, s1_test, s2_test).flatten()
+df_fiabilidad_test = pd.DataFrame({
+    'IT_test': IT_test,
+    'Fiabilidad Verdadera R(t)': fiabilidad_verdadera_test
+})
+print(df_fiabilidad_test)
