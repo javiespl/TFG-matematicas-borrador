@@ -1,358 +1,308 @@
 import numpy as np
-import matplotlib . pyplot as plt
-import random
-import math
+import matplotlib.pyplot as plt
 import pandas as pd
 import scipy.stats as stat
 import scipy.optimize as opt
- 
-#parámetro de escala
+import os
+
+# --- Parámetros de la distribución Lognormal ---
+
 def lognorm_lambda_i(theta, s1, s2):
+  """Calcula el parámetro de escala (mediana) lambda de Lognormal de forma vectorizada."""
+  a0, a1 = theta[0], theta[1]
+  return np.exp(a0 + a1 * s1)
 
-  a0 = theta[0]
-  a1 = theta[1]
-  lambdai =[]
-
-  for i in s1:
-    lambdai.append(np.exp(a0 + a1*i))
-
-  return np.array(lambdai)
-
-#parámetro de forma
 def lognorm_sigma_i(theta, s1, s2):
-  b0 = theta[2]
-  b1 = theta[3]
-  sigma = []
+  """Calcula el parámetro de forma (desviación estándar geométrica) sigma de Lognormal de forma vectorizada."""
+  b0, b1 = theta[2], theta[3]
+  return np.exp(b0 + b1 * s1)
 
-  for i in s1:
+# --- Funciones de Probabilidad ---
 
-    sigma.append(np.exp(b0 + b1*i))
-  return np.array(sigma)
+def probabilidad_lognorm(theta, IT, s1, s2):
+  """
+  Calcula la probabilidad de fallo para cada combinación de tiempo de inspección (IT)
+  y nivel de estrés (s1) usando broadcasting de NumPy.
+  """
+  sigmai = lognorm_sigma_i(theta, s1, s2)
+  lambdai = lognorm_lambda_i(theta, s1, s2)
+  
+  # Reshape IT a un vector columna (n, 1) para que NumPy haga broadcasting contra los arrays de parámetros (que son vectores fila de tamaño m).
+  # El resultado es una matriz de probabilidades de forma (n, m).
+  IT_col = IT[:, np.newaxis]
+  
+  # stat.lognorm.cdf espera shape (sigma) y scale (lambda/mediana).
+  prob_matrix = stat.lognorm.cdf(IT_col, s=sigmai, scale=lambdai)
+  
+  # Aplanamos la matriz para obtener un único vector de probabilidades.
+  return prob_matrix.flatten()
 
-#Funcion de distribución lognormal
-def lognorm_distribucion(t, theta, s1, s2): #Función de distribución
-
-  sigmai =lognorm_sigma_i(theta, s1, s2)
-  lambdai =lognorm_lambda_i(theta, s1, s2)
-
-  return stat.lognorm.cdf(t, sigmai, scale = lambdai)
-
-#Cálculo de probabilidad de fallo en el el momento de inspección IT_i
-def probabilidad_lognorm(theta, IT, s1, s2): 
-  probabilidades1 = []
-  for l in range(len(IT)):
-    probabilidades1.extend(lognorm_distribucion(IT[l], theta, s1 , s2))
-  return np.array(probabilidades1)
-
-#Generación de la muestra 
-def gen_muestra_binomial_lognorm(theta_0, IT, s1, s2, K, seed):
-  n_i =  []
-  pi_theta1 = probabilidad_lognorm(theta_0, IT, s1, s2)
+def gen_muestra_binomial_lognorm(theta, IT, s1, s2, K, seed):
+  """Genera una muestra binomial."""
+  pi_theta = probabilidad_lognorm(theta, IT, s1, s2)
   np.random.seed(seed)
-  for i in range(len(pi_theta1)):
-        n_i.append(np.random.binomial(K, pi_theta1[i]))
-  return np.array(n_i)
+  return np.random.binomial(K, pi_theta)
 
-#Cálculo del vector de probabilidades de fallo para la muestra
 def probabilidad_estimada(muestra, K):
-  p1 = []
-  p2 = []
-  for i in range(len(muestra)):
-    p1.append(muestra[i]/K)
-    p2.append(1 - muestra[i]/K)
-  return np.array(p1)
+  """Calcula el vector de probabilidades de fallo estimadas a partir de la muestra."""
+  return muestra / K
 
-'''
-#Divergencia de Kullback-Leibler
-def divergencia_KL(theta, IT, s1, s2, muestra, K):
-  pi_theta1 = probabilidad_lognorm(theta, IT, s1, s2)
-  pi_theta2 = 1 - pi_theta1
-  p1 = probabilidad_estimada(muestra, K)
-  p2 = 1 - p1
-  div_KL = []
-  eps = 1e-10
-  for i in range(len(muestra)):
-      if np.any(np.isclose([pi_theta1[i], pi_theta2[i], p1[i], p2[i]], 0, atol=eps)):
-          div_KL.append(K*(((p1[i]+eps)* np.log((p1[i]+eps)/(pi_theta1[i]+eps))) + ((p2[i]+eps)* np.log((p2[i]+eps)/(pi_theta2[i]+eps)))))
-      else:
-          div_KL.append(K*((p1[i]* np.log(p1[i]/pi_theta1[i])) + (p2[i]* np.log(p2[i]/pi_theta2[i]))))
-  return div_KL
-'''
-
-def divergencia_KL(theta, IT, s1, s2, muestra, K):
-  pi_theta1 = probabilidad_lognorm(theta, IT, s1, s2)
-  pi_theta2 = 1 - pi_theta1
-  p1 = probabilidad_estimada(muestra, K)
-  p2 = 1 - p1
-  div_KL = []
-  eps = 1e-10
-  
-  pi_theta1 = np.where(pi_theta1 == 0, eps, pi_theta1)
-  pi_theta2 = np.where(pi_theta2 == 0, eps, pi_theta2)
-  p1 = np.where(p1 == 0, eps, p1)
-  p2 = np.where(p2 == 0, eps, p2)
-
-  for i in range(len(muestra)):
-      div_KL.append(K*((p1[i]* np.log(p1[i]/pi_theta1[i])) + (p2[i]* np.log(p2[i]/pi_theta2[i]))))
-  return np.array(div_KL)
-
-'''
-#Divergencia de densidad de potencia en función del parámetro alpha
-def divergencia_lognorm(theta, alpha, IT, s1, s2, K, muestra):
-  pi_theta1 = probabilidad_lognorm(theta, IT, s1, s2)
-  pi_theta2 = 1 - pi_theta1
-  p1 = probabilidad_estimada(muestra, K)
-  p2 = 1 - p1
-  K_total = len(muestra)*K
-  div_alpha = []
-  
-  if alpha == 0:
-    for i in range(len(muestra)) :
-      div = divergencia_KL(theta, IT, s1, s2, muestra, K)
-      div_alpha.append(div)
-      
-  else:
-    for i in range(len(muestra)) :
-      div_alpha.append(K*((pi_theta1[i]**(1+ alpha) + pi_theta2[i]**(1+ alpha)) - (1 + 1/alpha)*((p1[i])*(pi_theta1[i])**alpha + (p2[i])*(pi_theta2[i])**alpha)))
-
-  div_alpha_pond = (np.sum(div_alpha))/K_total
-  return div_alpha_pond
-'''
+# --- Funciones de Divergencia (Vectorizadas) ---
 
 def divergencia_lognorm(theta, alpha, IT, s1, s2, K, muestra):
-  eps = 1e-10 # Un epsilon pequeño
-  pi_theta1 = probabilidad_lognorm(theta, IT, s1, s2)
-  
-  # APLICA EL CLIP AQUÍ
-  pi_theta1 = np.clip(pi_theta1, eps, 1.0 - eps)
+  """
+  Calcula la divergencia de densidad de potencia (DPD) de forma vectorizada.
+  El caso alpha=0 corresponde a la divergencia de Kullback-Leibler (KL).
+  """
+  eps = 1e-10
 
-  pi_theta2 = 1.0 - pi_theta1
+  # Probabilidades teóricas basadas en el theta actual
+  pi_theta1 = probabilidad_lognorm(theta, IT, s1, s2)
+  pi_theta1 = np.clip(pi_theta1, eps, 1.0 - eps) # Asegurar que estén en [eps, 1-eps]
+  pi_theta2 = 1 - pi_theta1
   
+  # Probabilidades empíricas de la muestra
   p1 = probabilidad_estimada(muestra, K)
   p1 = np.clip(p1, eps, 1.0 - eps)
-  p2 = 1.0 - p1
-  K_total = len(muestra)*K
+  p2 = 1 - p1
   
-  # El resto del código puede simplificarse usando operaciones vectoriales de numpy
   if alpha == 0:
-    div_KL = K * (p1 * np.log(p1 / pi_theta1) + p2 * np.log(p2 / pi_theta2))
-    div_alpha_pond = np.sum(div_KL) / K_total
+    # Divergencia de Kullback-Leibler
+    div_kl_vector = K * (p1 * np.log(p1 / pi_theta1) + p2 * np.log(p2 / pi_theta2))
+    total_divergence = np.sum(div_kl_vector)
   else:
+    # Divergencia de densidad de potencia
     term1 = pi_theta1**(1 + alpha) + pi_theta2**(1 + alpha)
     term2 = (1 + 1/alpha) * (p1 * pi_theta1**alpha + p2 * pi_theta2**alpha)
-    #term3 = term3 = (1/alpha)*((p1)**(1+alpha)+(p2)**(1+alpha))
-    div_alpha = K * (term1 - term2)
-    div_alpha_pond = np.sum(div_alpha) / K_total
+    div_alpha_vector = K * (term1 - term2)
+    total_divergence = np.sum(div_alpha_vector)
     
-  return div_alpha_pond
+  K_total = len(muestra) * K
+  return total_divergence / K_total
 
-#Cálculo del EMDP
+# --- Estimador y Simulación ---
+
 def emdp(theta_inicial, alpha, IT, s1, s2, K, muestra):
-  args = (alpha, IT, s1,s2, K,  muestra) 
-  #bounds = [(5.0, 7.0), (-0.5, 0.0),  (-1.0,1.0), (0.0, 0.2)]
+  """Encuentra el estimador de mínima divergencia de densidad de potencia (EMDP)."""
+  args = (alpha, IT, s1, s2, K, muestra)
+  # Para optimizadores que soportan límites (como 'L-BFGS-B'), puedes definirlos aquí.
+  # bounds = [(5.0, 7.0), (-0.5, 0.0), (-1.0, 1.0), (0.0, 0.2)]
+  result = opt.minimize(divergencia_lognorm, theta_inicial, args=args, method='Nelder-Mead')
   
-  estimador = opt.minimize(divergencia_lognorm, 
-                           theta_inicial, 
-                           args=args, 
-                           method='Nelder-Mead')#'L-BFGS-B', # USA ESTE OPTIMIZADOR
-                           #bounds=bounds)     # Y USA BOUNDSs
-  
-  return estimador.x
-
-#Simulación
-
-def simulacion(R, theta_0, theta_inicial, theta_cont, IT,s1,s2, K, alphas):
-    #Se simula una muestra sin contaminar y una muestra contaminada en función de un parámetro theta contaminado para la primera celda
-    #Devuelve el EMDP para la muestra sin contaminar y para la muestra contaminada, así como el RMSE de ambos estimadores.
-    
-    media_estimador =[]
-    media_estimador_cont = []
-    rmse_values = []
-    rmse_cont_values = []
-    
-    for alpha in alphas:
-      estimador = []
-      estimador_cont = []
+  if not result.success:
+      print(f"ADVERTENCIA: La optimización falló para alpha={alpha} con el mensaje: {result.message}")
       
-      for j in range(R):
-          
-        #Se estima el valor del emdp para la muestra sin contaminar  
-        muestra = gen_muestra_binomial_lognorm(theta_0, IT, s1, s2, K, j)
-        theta_estimador = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra)
-        estimador.append(theta_estimador)
-        
-        #Se estima el valor del emdp para la muestra contaminada
-        muestra_cont = gen_muestra_binomial_lognorm(theta_cont, IT, s1, s2, K, j)
-        muestra[0] = muestra_cont[0]
-        theta_estimador_cont = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra)
-        estimador_cont.append(theta_estimador_cont)
+  return result.x
 
-        #Se ecalcula la media del emdp sin contaminar
-      mean_estimator = np.mean(estimador, axis = 0)
-      mean_estimator_cont = np.mean(estimador_cont, axis = 0)
-      
-      #Se calcula la media del emdp contaminado
-      media_estimador.append(mean_estimator)
-      media_estimador_cont.append(mean_estimator_cont)
+def simulacion(R, theta_0, theta_inicial, theta_cont, IT, s1, s2, K, alphas):
+    """
+    Realiza la simulación para estimar parámetros con y sin contaminación.
+    
+    Devuelve:
+        Tres DataFrames de pandas con los resultados.
+    """
+    num_alphas = len(alphas)
+    num_params = len(theta_0)
+    
+    estimators_clean = np.zeros((num_alphas, R, num_params))
+    estimators_cont = np.zeros((num_alphas, R, num_params))
+    
+    print("Iniciando simulación Lognormal...")
+    for i, alpha in enumerate(alphas):
+        print(f"Procesando alpha = {alpha} ({i+1}/{num_alphas})")
+        for j in range(R):
+            # 1. Muestra sin contaminar
+            muestra_clean = gen_muestra_binomial_lognorm(theta_0, IT, s1, s2, K, seed=j)
+            
+            estimators_clean[i, j, :] = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra_clean)
+            
+            # 2. Muestra contaminada
+            muestra_cont_source = gen_muestra_binomial_lognorm(theta_cont, IT, s1, s2, K, seed=j)
+            muestra_contaminated = np.copy(muestra_clean)
+            muestra_contaminated[0] = muestra_cont_source[0] # Contaminamos solo el primer punto
 
-        #Cálculo del RMSE para la muestra sin contaminar
-      mse = np.mean((theta_0 - mean_estimator) ** 2)
-      rmse = np.sqrt(mse)
-      rmse_values.append(rmse)
+            estimators_cont[i, j, :] = emdp(theta_0, alpha, IT, s1, s2, K, muestra_contaminated)
 
-        #Cálculo del RMSE para la muestra contamindada
-      mse_cont = np.mean((theta_0 - mean_estimator_cont) ** 2)
-      rmse_cont = np.sqrt(mse_cont)
-      rmse_cont_values.append(rmse_cont)
+    # --- Procesamiento de Resultados (Vectorizado) ---
+    
+    media_estimators_clean = np.mean(estimators_clean, axis=1)
+    media_estimators_cont = np.mean(estimators_cont, axis=1)
+    
+    se_clean = (estimators_clean - theta_0)**2
+    se_cont = (estimators_cont - theta_0)**2
+    
+    # MSE = Media de los SE sobre las simulaciones (R) y los parámetros.
+    mse_clean = np.mean(se_clean, axis=(1, 2))
+    mse_cont = np.mean(se_cont, axis=(1, 2))
+    
+    rmse_clean = np.sqrt(mse_clean)
+    rmse_cont = np.sqrt(mse_cont)
 
-   # Convertir a DataFrames
-    df_estimators = pd.DataFrame(media_estimador, columns=[f"param_{i+1}" for i in range(len(theta_0))])
+    # --- Crear DataFrames para guardar los resultados ---
+    df_estimators = pd.DataFrame(media_estimators_clean, columns=[f"param_{i+1}_mean" for i in range(num_params)])
     df_estimators["alpha"] = alphas
-    df_estimators_cont = pd.DataFrame(media_estimador_cont, columns=[f"param_cont_{i+1}" for i in range(len(theta_0))])
+    
+    df_estimators_cont = pd.DataFrame(media_estimators_cont, columns=[f"param_cont_{i+1}_mean" for i in range(num_params)])
     df_estimators_cont["alpha"] = alphas
 
-    df_rmse = pd.DataFrame({"alpha": alphas, "rmse": rmse_values, "rmse_cont": rmse_cont_values})
+    df_rmse = pd.DataFrame({"alpha": alphas, "rmse_clean": rmse_clean, "rmse_cont": rmse_cont})
 
-    # Guardar en CSV
-    df_estimators.to_csv("estimators.csv", index=False)
-    df_estimators_cont.to_csv("estimators_cont.csv", index=False)
-    df_rmse.to_csv("rmse.csv", index=False)
-    print("CSV files saved: 'estimators.csv', 'estimators_cont.csv', and 'rmse.csv'")
-    return np.array(media_estimador), np.array(media_estimador_cont), np.array(rmse_values), np.array(rmse_cont_values)
+    # --- Guardar en CSV ---
+    try:
+        output_path = "resultados_lognormal/"
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+            
+        df_estimators.to_csv(os.path.join(output_path, "estimators_clean.csv"), index=False)
+        df_estimators_cont.to_csv(os.path.join(output_path, "estimators_cont.csv"), index=False)
+        df_rmse.to_csv(os.path.join(output_path, "rmse.csv"), index=False)
+        print(f"Archivos CSV guardados en la carpeta: '{output_path}'")
+    except Exception as e:
+        print(f"Error al guardar los archivos CSV: {e}")
 
-#Datos para la simulación
-R_lognorm = 1000 #Número de simulaciones
-IT_lognorm = np.array([8,16,24,36]) #Instantes de inspección
-K = 100 #Número de dispositivos 
-s1_lognorm = np.array([30,40,50]) #niveles de estrés
-s2_lognorm = np.array([0,0,0])
-theta_0_lognorm = np.array([6,-0.1,-0.6,0.02]) #Theta_0
-theta_inicial_lognorm = np.array([5.8,-0.08,-0.5,0.02]) #Theta inicial para la función de minimización
-theta_cont_lognorm = np.array([7,-0.1,0.4,0.02])#Theta contaminada para generar la muestra contaminada
-alphas= np.array([0, 0.2, 0.4, 0.6, 0.8, 1]) #parámetros alpha de los que depende la DPD
+    return df_estimators, df_estimators_cont, df_rmse
+'''
+# --- ANÁLISIS DE FIABILIDAD---
 
-media_estimador_lognorm, media_estimador_cont_lognorm, rmse_values_lognorm, rmse_cont_values_lognorm = simulacion(R_lognorm,theta_0_lognorm, theta_inicial_lognorm, theta_cont_lognorm, IT_lognorm, s1_lognorm, s2_lognorm, K, alphas)
+def calcular_fiabilidad(theta, IT, s1, s2):
+    """
+    Calcula la fiabilidad R(t) = 1 - F(t) de forma vectorial.
+    Reutiliza la función 'probabilidad_lognorm' (que calcula el CDF).
+    
+    Devuelve:
+        Un array 1D con los valores de fiabilidad para cada tiempo en IT.
+    """
+    # probabilidad_lognorm devuelve la prob. de fallo F(t) en una matriz
+    prob_fallo_matrix = probabilidad_lognorm(theta, IT, s1, s2)
+    
+    # Fiabilidad R(t) = 1 - F(t)
+    fiabilidad_matrix = 1 - prob_fallo_matrix
+    
+    # Aplanamos para obtener un vector 1D, ya que s1 es un solo valor
+    return fiabilidad_matrix.flatten()
 
-##################################################
+def analizar_sesgo_fiabilidad(df_estimadores, theta_0, IT_test, s1_test, s2):
+    """
+    Calcula el sesgo de la fiabilidad para un conjunto de estimadores.
+    
+    Args:
+        df_estimadores (DataFrame): DataFrame con los parámetros estimados (ej. df_est_clean).
+        theta_0 (np.array): Parámetros verdaderos para calcular la fiabilidad real.
+        IT_test (np.array): Tiempos de inspección para el análisis.
+        s1_test (np.array): Nivel de estrés para el análisis.
+        s2 (np.array): Segundo nivel de estrés (dummy en este caso).
 
-#Cálculo de la fiabilidad
+    Returns:
+        DataFrame con el sesgo de la fiabilidad para cada alpha.
+    """
+    # 1. Calcular la fiabilidad verdadera una sola vez
+    fiabilidad_verdadera = calcular_fiabilidad(theta_0, IT_test, s1_test, s2)
+    
+    # 2. Extraer solo las columnas de parámetros del DataFrame
+    num_params = len(theta_0)
+    thetas_estimados = df_estimadores.iloc[:, 0:num_params]
+    
+    # 3. Aplicar la función de fiabilidad a cada fila de parámetros estimados
+    # .apply con axis=1 es ideal para operaciones por fila.
+    # result_type='expand' convierte la lista devuelta por cada fila en columnas del nuevo DataFrame.
+    fiabilidades_estimadas = thetas_estimados.apply(
+        lambda row: calcular_fiabilidad(row.values, IT_test, s1_test, s2),
+        axis=1,
+        result_type='expand'
+    )
+    
+    # 4. Calcular el sesgo (Bias = Estimado - Verdadero) de forma vectorial
+    # La resta se aplica a cada fila del DataFrame.
+    df_sesgo = fiabilidades_estimadas.subtract(fiabilidad_verdadera, axis='columns')
+    
+    # 5. Formatear el DataFrame final
+    df_sesgo.columns = [f"Bias_R(t={t})" for t in IT_test]
+    df_sesgo["alpha"] = df_estimadores["alpha"].values
+    
+    # Reordenar para que 'alpha' sea la primera columna
+    columnas_ordenadas = ["alpha"] + [col for col in df_sesgo.columns if col != "alpha"]
+    return df_sesgo[columnas_ordenadas]
 
-IT1 = np.array([10,20,30])
+# --- DATOS PARA LA SIMULACIÓN Y EL ANÁLISIS ---
 
-s_prueba = 30
+# Parámetros de simulación
+R = 1000
+K = 100
+IT_lognorm = np.array([8, 16, 24, 36])
+s1_lognorm = np.array([30, 40, 50])
+s2_lognorm = np.array([0, 0, 0]) # s2 no se usa, pero la función lo espera
+alphas = np.array([0, 0.2, 0.4, 0.6, 0.8, 1])
 
-def distribucion1(t, theta,s): #Función de distribución lognormal
+# Parámetros del modelo
+theta_0_lognorm = np.array([6, -0.1, -0.6, 0.02])
+theta_inicial_lognorm = np.array([5.8, -0.08, -0.5, 0.02])
+theta_cont_lognorm = np.array([7, -0.1, -0.6, 0.02])
 
-  a0 = theta[0]
-  a1 = theta[1]
-  b0 = theta[2]
-  b1 = theta[3]
+# --- EJECUCIÓN ---
 
-  lambdai =np.exp(a0 + a1*s_prueba)
-  sigmai =np.exp(b0 + b1*s_prueba)
+# 1. Ejecutar la simulación principal
+df_est_clean, df_est_cont, df_rmse = simulacion(
+    R, theta_0_lognorm, theta_inicial_lognorm, theta_cont_lognorm,
+    IT_lognorm, s1_lognorm, s2_lognorm, K, alphas
+)
 
-  return stat.lognorm.cdf(t, sigmai, scale = lambdai)
+# 2. Realizar el análisis de fiabilidad
+print("\n--- Iniciando Análisis de Fiabilidad ---")
 
-def fiabilidad(theta, IT, s): #Probabilidad de fallo para cada intervalo
+# Parámetros para el test de fiabilidad
+IT_test = np.array([8,12,16])
+s1_test = np.array([30]) # El nivel de estrés de prueba, como array
 
-  probabilidades1 = []
-  probabilidades2 = []
+# Analizar resultados de la muestra limpia
+df_sesgo_clean = analizar_sesgo_fiabilidad(
+    df_est_clean, theta_0_lognorm, IT_test, s1_test, s2_lognorm
+)
 
-  for l in range(len(IT)):
+# Analizar resultados de la muestra contaminada
+df_sesgo_cont = analizar_sesgo_fiabilidad(
+    df_est_cont, theta_0_lognorm, IT_test, s1_test, s2_lognorm
+)
 
-    probabilidades1.append(distribucion1(IT[l], theta, s))
-    probabilidades2.append(1 - distribucion1(IT[l], theta, s))
+# Guardar los resultados del sesgo en archivos CSV
+output_path = "resultados_lognormal/"
+df_sesgo_clean.to_csv(os.path.join(output_path, "fiabilidad_sesgo_clean.csv"), index=False)
+df_sesgo_cont.to_csv(os.path.join(output_path, "fiabilidad_sesgo_cont.csv"), index=False)
+print(f"Archivos CSV de sesgo de fiabilidad guardados en '{output_path}'")
 
-  return np.array(probabilidades2)
+# 3. Generar Tablas LaTeX para el informe
 
-lista_probs = fiabilidad(theta_0_lognorm, IT1, s_prueba)
+# Combinar los resultados de sesgo en una sola tabla
+df_sesgo_cont_sin_alpha = df_sesgo_cont.drop('alpha', axis=1)
+df_sesgo_combinado = pd.concat([df_sesgo_clean, df_sesgo_cont_sin_alpha], axis=1)
 
-df = pd.read_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/lognorm/estimators.csv")  # Replace with the actual CSV file path
-results_list = []
+# Generar código LaTeX
+latex_table_sesgo = df_sesgo_combinado.to_latex(index=False, float_format="%.4f")
+latex_table_rmse = df_rmse.to_latex(index=False, float_format="%.4f")
 
-for index, row in df.iterrows():
-    theta = row[0:4].values  # Extract the 4 estimated parameters from each row
-    alpha_value = row.iloc[-1]  # Extract alpha value
-
-    prob_vector = fiabilidad(theta, IT1, s_prueba)  # Compute fiabilidad function
-
-    # Store results in a dictionary format
-    results_list.append([alpha_value] + prob_vector.tolist())
-
-columns = ["alpha"] + [f"R{IT1[i]}" for i in range(len(IT1))]
-columnas = [f"R{IT1[i]}" for i in range(len(IT1))]
-results_df1 = pd.DataFrame(results_list, columns=columns)
-for i, col in enumerate(columnas):
-    results_df1[col] = results_df1[col] - lista_probs[i]
-# Step 6: Save results to a separate CSV file
-results_df1.to_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/lognorm/fiabilidad_results.csv", index=False)
-
-# Print confirmation
-print("Results saved in 'fiabilidad_results.csv'.")
-
-df = pd.read_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/lognorm/estimators_cont.csv")  # Replace with the actual CSV file path
-results_list = []
-
-for index, row in df.iterrows():
-    theta = row[0:4].values  # Extract the 4 estimated parameters from each row
-    alpha_value = row.iloc[-1]  # Extract alpha value
-
-    prob_vector = fiabilidad(theta, IT1, s_prueba)  # Compute fiabilidad function
-
-    # Store results in a dictionary format
-    results_list.append([alpha_value] + prob_vector.tolist())
-
-columns = ["alpha"] + [f"R{IT1[i]}" for i in range(len(IT1))]
-columnas = [f"R{IT1[i]}" for i in range(len(IT1))]
-results_df2 = pd.DataFrame(results_list, columns=columns)
-for i, col in enumerate(columnas):
-    results_df2[col] = results_df2[col] - lista_probs[i]
-
-# Step 6: Save results to a separate CSV file
-results_df2.to_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/lognorm/fiabilidad_results_cont.csv", index=False)
-df2_sin_primera = results_df2.iloc[:, 1:]
-
-# Print confirmation
-print("Results saved in 'fiabilidad_results_cont.csv'.")
-
-df_combinado = pd.concat([results_df1, df2_sin_primera], axis=1)
-latex_table=df_combinado.to_latex(index=False)
-df_rmse = pd.read_csv("C:/Users/J.ESPLUGUESGARCIA/OneDrive - Zurich Insurance/Uni/TFG_matematicas_Code/lognorm/rmse.csv")
-tabla_latex_rmse = df_rmse.to_latex(index=False)
-
-# Print 
-print(latex_table)
-
-print(tabla_latex_rmse)
-
-
-
-
-
-print(lognorm_lambda_i(theta_cont_lognorm,s1_lognorm, s2_lognorm))
-print(lognorm_sigma_i(theta_cont_lognorm, s1_lognorm, s2_lognorm))
-#[20.08553692  7.3890561   2.71828183]
-#[1.         1.22140276 1.4918247 ]
+# Imprimir resultados finales
+print("\n--- Resultados de la Simulación ---")
+print("\nValores medios de los estimadores (Muestra Limpia):")
+print(df_est_clean)
+print("\nValores medios de los estimadores (Muestra Contaminada):")
+print(df_est_cont)
 
 
-#cont
-#[16.44464677  6.04964746  2.22554093]
-#[1.         1.22140276 1.4918247 ]
+print("\n--- Resultados del Análisis de Fiabilidad (Sesgo) ---")
+print("\nSesgo para Muestra Limpia:")
+print(df_sesgo_clean)
+print("\nSesgo para Muestra Contaminada:")
+print(df_sesgo_cont)
 
-x = np.linspace(0, 50, 1000)
+print("\n--- Tablas LaTeX Generadas ---")
+print("\nTabla de Sesgo de Fiabilidad:")
+print(latex_table_sesgo)
+print("\nTabla de RMSE:")
+print(latex_table_rmse)
 
-scale,c = 7.3890561,1.22140276
-
-cdf = stat.lognorm.cdf(x,c, scale = scale)
-
-# Crear el gráfico
-plt.plot(x, cdf, label=f'lognorm(c={c}, scale={scale})')
-plt.title('Distribución lognorm')
-plt.xlabel('x')
-plt.ylabel('Densidad de probabilidad')
-plt.grid(True)
-plt.legend()
-plt.show()
-
-print(probabilidad_lognorm(theta_cont_lognorm, IT_lognorm,s1_lognorm, s2_lognorm))
-print(probabilidad_lognorm(theta_0_lognorm, IT_lognorm,s1_lognorm, s2_lognorm))
+print("\n--- Analizando la ubicación de IT_test en la distribución ---")
+fiabilidad_verdadera_test = 1 - probabilidad_lognorm(theta_0_lognorm, IT_test, s1_test, s2_lognorm).flatten()
+df_fiabilidad_test = pd.DataFrame({
+    'IT_test': IT_test,
+    'Fiabilidad Verdadera R(t)': fiabilidad_verdadera_test
+})
+print(df_fiabilidad_test)
