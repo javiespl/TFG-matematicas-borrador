@@ -1,0 +1,216 @@
+import numpy as np
+import pandas as pd
+import scipy.stats as stat
+import scipy.optimize as opt
+import scipy.special as sp  # Importante para la función Gamma en el cálculo de la vida media
+import os
+import matplotlib.pyplot as plt
+
+# --- Parámetros de la distribución Weibull (Versión Vectorial) ---
+def weibull_scale_i(theta, s1):
+  """Calcula el parámetro de escala (lambda o eta) de Weibull de forma vectorial."""
+  # Corresponde a a0, a1 en el modelo
+  a0, a1 = theta[0], theta[1]
+  return np.exp(a0 + a1 * s1)
+
+def weibull_shape_i(theta, s1):
+  """Calcula el parámetro de forma (k o nu) de Weibull de forma vectorial."""
+  # Corresponde a b0, b1 en el modelo
+  b0, b1 = theta[2], theta[3]
+  return np.exp(b0 + b1 * s1)
+
+# --- Funciones de Probabilidad (Versión Vectorial) ---
+def probabilidad_weibull(theta, IT, s1):
+  """
+  Calcula el vector de probabilidades de fallo teóricas (CDF de Weibull).
+  """
+  # Aseguramos que s1 tenga la misma forma que IT si es un escalar
+  if isinstance(s1, (int, float)):
+      s1 = np.full_like(IT, s1, dtype=float)
+      
+  scale_i = weibull_scale_i(theta, s1)
+  shape_i = weibull_shape_i(theta, s1)
+  # Para weibull_min de SciPy, el parámetro de forma es 'c' y el de escala es 'scale'
+  return stat.weibull_min.cdf(IT, c=shape_i, scale=scale_i)
+
+def probabilidad_estimada(muestra, K):
+  """Calcula el vector de probabilidades de fallo estimadas a partir de la muestra."""
+  return muestra / K
+
+# --- Función de Divergencia (Versión Vectorial) ---
+def divergencia_weibull_vectorial(theta, alpha, IT, s1, K, muestra):
+  """
+  Calcula la divergencia de densidad de potencia (DPD) de forma totalmente vectorial.
+  La fórmula es la misma que para Gamma, pero usa la probabilidad de Weibull.
+  """
+  eps = 1e-10
+
+  pi_theta1 = probabilidad_weibull(theta, IT, s1)
+  pi_theta1 = np.clip(pi_theta1, eps, 1.0 - eps) 
+  pi_theta2 = 1 - pi_theta1
+  
+  p1 = probabilidad_estimada(muestra, K)
+  p1 = np.clip(p1, eps, 1.0 - eps)
+  p2 = 1 - p1
+  
+  if alpha == 0:
+    div_vector = K * (p1 * np.log(p1 / pi_theta1) + p2 * np.log(p2 / pi_theta2))
+  else:
+    term1 = pi_theta1**(1 + alpha) + pi_theta2**(1 + alpha)
+    term2 = (1 + 1/alpha) * (p1 * pi_theta1**alpha + p2 * pi_theta2**alpha)
+    term3 = (1/alpha) * ((p1)**(1+alpha) + (p2)**(1+alpha))
+    div_vector = K * (term1 - term2 + term3)
+    
+  total_divergence = np.sum(div_vector)
+  K_total = len(muestra) * K
+  
+  return total_divergence / K_total
+
+# --- Estimador y Ejecución ---
+def emdp(theta_inicial, alpha, IT, s1, K, muestra):
+  """Encuentra el estimador de mínima divergencia (EMDP)."""
+  args = (alpha, IT, s1, K, muestra)
+  result = opt.minimize(divergencia_weibull_vectorial, theta_inicial, args=args, method='Nelder-Mead')
+  
+  if not result.success:
+      print(f"ADVERTENCIA: La optimización pudo haber fallado para alpha={alpha} con el mensaje: {result.message}")
+      
+  return result.x
+
+def estimacion(theta_inicial, IT, s1, K, muestra, alphas):
+  """
+  Ejecuta la estimación para una lista de valores de alpha y guarda los resultados.
+  """
+  estimadores = []
+  for alpha in alphas:
+    emdp_estimado = emdp(theta_inicial, alpha, IT, s1, K, muestra)
+    estimadores.append(emdp_estimado)
+    print(f"Alpha: {alpha:.2f} -> Parámetros estimados: {emdp_estimado}")
+    
+  df_estimators = pd.DataFrame(estimadores, columns=[f"theta_{i+1}" for i in range(len(theta_inicial))])
+  df_estimators["alpha"] = alphas
+  
+  output_path = "resultados_weibull/" # Carpeta de salida cambiada a 'weibull'
+  if not os.path.exists(output_path):
+      os.makedirs(output_path) 
+      
+  filepath = os.path.join(output_path, "estimators_weibull_reales.csv")
+  df_estimators.to_csv(filepath, index=False)
+  print(f"\nArchivo CSV guardado en: '{filepath}'")
+  
+  return df_estimators
+
+# --- Datos de Entrada ---
+# Usamos los mismos datos que antes para poder comparar
+muestra = np.array([3, 1, 6, 3, 5, 7, 7, 7, 9])
+K = 10
+IT = np.array([10, 10, 10, 20, 20, 20, 30, 30, 30])
+s1 = np.array([308, 318, 328, 308, 318, 328, 308, 318, 328])
+# El theta inicial debe ser ajustado si el optimizador tiene problemas.
+# Una buena práctica es que exp(theta) de un valor razonable.
+# Por ej, si esperamos una escala ~20, theta_0 podría ser log(20) ~ 3.
+# Si esperamos una forma ~2, theta_2 podría ser log(2) ~ 0.7.
+theta_inicial = np.array([np.log(20.0), 0.0, np.log(2.0), 0.0]) 
+alphas = np.array([0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1])
+
+# --- Ejecución del Proceso Principal ---
+np.set_printoptions(formatter={'float': '{:0.4f}'.format})
+df_resultados = estimacion(theta_inicial, IT, s1, K, muestra, alphas)
+print("\nEstimaciones Finales (Modelo Weibull):")
+print(df_resultados)
+
+
+# =========================================================================
+# === CÁLCULO DE VIDA MEDIA WEIBULL PARA MÚLTIPLES NIVELES DE ESTRÉS ===
+# =========================================================================
+
+def calcular_vida_media_weibull_multinivel(df_estimadores, niveles_s):
+    """
+    Calcula la vida media para una distribución Weibull para cada conjunto de 
+    parámetros y para cada nivel de estrés.
+    La vida media de una Weibull es: escala * Γ(1 + 1/forma).
+    """
+    thetas = df_estimadores[['theta_1', 'theta_2', 'theta_3', 'theta_4']].values
+    
+    results_df = df_estimadores[['alpha']].copy()
+    
+    for s_nivel in niveles_s:
+        # Calcular los parámetros de Weibull para el nivel de estrés actual
+        scale_i = np.exp(thetas[:, 0] + thetas[:, 1] * s_nivel)
+        shape_i = np.exp(thetas[:, 2] + thetas[:, 3] * s_nivel)
+        
+        # Calcular la vida media usando la fórmula de Weibull
+        vida_media = scale_i * sp.gamma(1 + 1 / shape_i)
+        
+        results_df[f'vida_media_s{s_nivel}'] = vida_media
+        
+    return results_df
+
+# --- Ejecución del cálculo ---
+output_path = "resultados_weibull/"
+niveles_de_estres = np.unique(s1)
+
+df_vida_media_multinivel = calcular_vida_media_weibull_multinivel(df_resultados, niveles_de_estres)
+
+vida_media_filepath = os.path.join(output_path, "vida_media_multinivel_weibull_reales.csv")
+df_vida_media_multinivel.to_csv(vida_media_filepath, index=False)
+
+print(f"\nResultados de vida media (Weibull) multinivel guardados en '{vida_media_filepath}'.")
+print("\nVida Media Calculada para cada Nivel de Estrés (Modelo Weibull):")
+print(df_vida_media_multinivel)
+
+print("\n\n--- Código LaTeX para la tabla de Estimaciones Finales (Weibull) ---")
+print(df_resultados.to_latex(index=True, float_format="%.5f"))
+
+print("\n\n--- Código LaTeX para la tabla de Vida Media (Weibull) ---")
+print(df_vida_media_multinivel.to_latex(index=False, float_format="%.4f"))
+
+
+# =========================================================================
+# === GRÁFICOS DE CDF ESTIMADAS WEIBULL PARA CADA NIVEL DE ESTRÉS ===
+# =========================================================================
+
+print("\nGenerando gráficos de las CDF estimadas (Weibull) para cada nivel de estrés...")
+
+for s_grafica in niveles_de_estres:
+    
+    plt.figure(figsize=(12, 8))
+    
+    # 1. Graficar los puntos de datos empíricos
+    indices_s = np.where(s1 == s_grafica)
+    IT_s = IT[indices_s]
+    muestra_s = muestra[indices_s]
+    p_estimada_s = muestra_s / K
+
+    plt.scatter(IT_s, p_estimada_s, color='red', s=100, zorder=5, 
+                label=f'Datos Observados (s1={s_grafica})')
+
+    # 2. Generar y graficar una curva CDF para cada valor de alpha
+    t_max = 40 
+    t_values = np.linspace(0, t_max, 400)
+    colors = plt.cm.viridis(np.linspace(0, 1, len(df_resultados)))
+
+    for index, row in df_resultados.iterrows():
+        theta_estimado = row[['theta_1', 'theta_2', 'theta_3', 'theta_4']].values
+        alpha_val = row['alpha']
+        
+        # Calcular la CDF usando la probabilidad de WEIBULL
+        cdf_values = probabilidad_weibull(theta_estimado, t_values, s_grafica)
+        
+        plt.plot(t_values, cdf_values, label=f'α = {alpha_val:.2f}', color=colors[index], linewidth=2)
+
+    # 3. Añadir detalles al gráfico
+    plt.title(f'CDF de Falla Estimada (Weibull) para Nivel de Estrés s1 = {s_grafica}', fontsize=16)
+    plt.xlabel('Tiempo (IT)', fontsize=12)
+    plt.ylabel('Probabilidad Acumulada de Falla F(t)', fontsize=12)
+    plt.legend(title="Estimador (alpha)", fontsize=10, loc='best')
+    plt.grid(True, linestyle='--', alpha=0.6)
+    plt.xlim(0, t_max)
+    plt.ylim(0, 1)
+
+    # 4. Guardar el gráfico
+    plot_filename = os.path.join(output_path, f"cdf_estimadas_weibull_s{s_grafica}.png")
+    plt.savefig(plot_filename, dpi=300)
+    print(f"Gráfico guardado en: {plot_filename}")
+
+plt.show()
