@@ -38,8 +38,6 @@ def probabilidad_weibull(theta, IT, s1, s2):
 def gen_muestra_binomial_weibull(theta, IT, s1, s2, K, seed):
   """
   Genera una muestra binomial de forma vectorizada.
-  
-  np.random.binomial puede tomar un array de probabilidades.
   """
   pi_theta = probabilidad_weibull(theta, IT, s1, s2)
   np.random.seed(seed)
@@ -174,10 +172,6 @@ def simulacion(R, theta_0, theta_inicial, theta_cont, IT, s1, s2, K, alphas):
 def calcular_fiabilidad(theta, IT, s1, s2):
     """
     Calcula la fiabilidad R(t) = 1 - F(t) de forma vectorial.
-    Reutiliza la función 'probabilidad_weibull' (que calcula el CDF).
-    
-    Devuelve:
-        Un array 1D con los valores de fiabilidad para cada tiempo en IT.
     """
     prob_fallo_matrix = probabilidad_weibull(theta, IT, s1, s2)
  
@@ -282,4 +276,5 @@ print("\nTabla de Sesgo de Fiabilidad:")
 print(latex_table_sesgo)
 print("\nTabla de RMSE:")
 print(latex_table_rmse)
+
 
