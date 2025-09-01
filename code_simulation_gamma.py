@@ -19,7 +19,7 @@ def gamma_lambda_i(theta, s1, s2):
   S1, S2 = np.meshgrid(s1, s2, indexing='ij')
   return np.exp(b0 + b1 * S1 + b2 * S2).flatten()
 
-# --- Funciones de Probabilidad (Vectorizadas) ---
+# --- Funciones de Probabilidad ---
 
 def probabilidad_gamma(theta, IT, s1, s2):
   """
@@ -28,14 +28,10 @@ def probabilidad_gamma(theta, IT, s1, s2):
   alphai = gamma_alpha_i(theta, s1, s2)
   lambdai = gamma_lambda_i(theta, s1, s2)
   
-  # Reshape IT a un vector columna (n, 1) para que NumPy haga broadcasting contra los arrays de parámetros (que son vectores fila de tamaño m).
-  # El resultado es una matriz de probabilidades de forma (n, m).
   IT_col = IT[:, np.newaxis]
  
   prob_matrix = stat.gamma.cdf(IT_col, a=alphai, scale=lambdai)
   
-  # Aplanamos la matriz para obtener un único vector de probabilidades,
-  # que coincide con el formato del código original.
   return prob_matrix.flatten()
 
 def gen_muestra_binomial_gamma(theta, IT, s1, s2, K, seed):
@@ -48,7 +44,7 @@ def probabilidad_estimada(muestra, K):
   """Calcula el vector de probabilidades de fallo estimadas a partir de la muestra."""
   return muestra / K
 
-# --- Funciones de Divergencia (Vectorizadas) ---
+# --- Funciones de Divergencia ---
 
 def divergencia_gamma(theta, alpha, IT, s1, s2, K, muestra):
   """
@@ -72,13 +68,12 @@ def divergencia_gamma(theta, alpha, IT, s1, s2, K, muestra):
     div_kl_vector = K * (p1 * np.log(p1 / pi_theta1) + p2 * np.log(p2 / pi_theta2))
     total_divergence = np.sum(div_kl_vector)
   else:
-    # Divergencia de densidad de potencia (vectorizada)
+    # Divergencia de densidad de potencia
     term1 = pi_theta1**(1 + alpha) + pi_theta2**(1 + alpha)
     term2 = (1 + 1/alpha) * (p1 * pi_theta1**alpha + p2 * pi_theta2**alpha)
     div_alpha_vector = K * (term1 - term2)
     total_divergence = np.sum(div_alpha_vector)
-    
-  # Se pondera por el número total de observaciones
+  
   K_total = len(muestra) * K
   return total_divergence / K_total
 
@@ -123,7 +118,7 @@ def simulacion(R, theta_0, theta_inicial, theta_cont, IT, s1, s2, K, alphas):
             
             estimators_cont[i, j, :] = emdp(theta_inicial, alpha, IT, s1, s2, K, muestra_contaminated)
 
-    # --- Procesamiento de Resultados (Vectorizado) ---
+    # --- Procesamiento de Resultados---
     
     # Calcular medias de los estimadores para cada alpha
     media_estimators_clean = np.mean(estimators_clean, axis=1)
@@ -131,11 +126,10 @@ def simulacion(R, theta_0, theta_inicial, theta_cont, IT, s1, s2, K, alphas):
     
     # Calcular Error Cuadrático (SE) y luego RMSE
     # SE = (estimador - valor_real)^2
-    # La resta se hace elemento a elemento gracias a broadcasting
     se_clean = (estimators_clean - theta_0)**2
     se_cont = (estimators_cont - theta_0)**2
     
-    # MSE = Media de los SE. Tomamos la media sobre las R simulaciones (axis=1) y los parámetros (axis=2)
+    # MSE = Media de los SE
     mse_clean = np.mean(se_clean, axis=(1, 2))
     mse_cont = np.mean(se_cont, axis=(1, 2))
     
@@ -169,65 +163,38 @@ def simulacion(R, theta_0, theta_inicial, theta_cont, IT, s1, s2, K, alphas):
 
 # --- ANÁLISIS DE FIABILIDAD---
 
-
 def calcular_fiabilidad(theta, IT, s1, s2):
     """
-    Calcula la fiabilidad R(t) = 1 - F(t) de forma vectorial.
-    Reutiliza la función 'probabilidad_gamma' (que calcula el CDF).
-    
-    Devuelve:
-        Un array 1D con los valores de fiabilidad para cada tiempo en IT.
+    Calcula la fiabilidad R(t) = 1 - F(t).
     """
-    # probabilidad_lognorm devuelve la prob. de fallo F(t) en una matriz
     prob_fallo_matrix = probabilidad_gamma(theta, IT, s1, s2)
     
-    # Fiabilidad R(t) = 1 - F(t)
     fiabilidad_matrix = 1 - prob_fallo_matrix
-    
-    # Aplanamos para obtener un vector 1D, ya que s1 es un solo valor
+
     return fiabilidad_matrix.flatten()
 
 def analizar_sesgo_fiabilidad(df_estimadores, theta_0, IT_test, s1_test, s2_test):
     """
     Calcula el sesgo de la fiabilidad para un conjunto de estimadores.
-    
-    Args:
-        df_estimadores (DataFrame): DataFrame con los parámetros estimados (ej. df_est_clean).
-        theta_0 (np.array): Parámetros verdaderos para calcular la fiabilidad real.
-        IT_test (np.array): Tiempos de inspección para el análisis.
-        s1_test (np.array): Nivel de estrés para el análisis.
-        s2 (np.array): Segundo nivel de estrés (dummy en este caso).
-
-    Returns:
-        DataFrame con el sesgo de la fiabilidad para cada alpha.
     """
-    # 1. Calcular la fiabilidad verdadera una sola vez
     fiabilidad_verdadera = calcular_fiabilidad(theta_0, IT_test, s1_test, s2_test)
     
-    # 2. Extraer solo las columnas de parámetros del DataFrame
     num_params = len(theta_0)
     thetas_estimados = df_estimadores.iloc[:, 0:num_params]
     
-    # 3. Aplicar la función de fiabilidad a cada fila de parámetros estimados
-    # .apply con axis=1 es ideal para operaciones por fila.
-    # result_type='expand' convierte la lista devuelta por cada fila en columnas del nuevo DataFrame.
     fiabilidades_estimadas = thetas_estimados.apply(
         lambda row: calcular_fiabilidad(row.values, IT_test, s1_test, s2_test),
         axis=1,
         result_type='expand'
     )
-    
-    # 4. Calcular el sesgo (Bias = Estimado - Verdadero) de forma vectorial
-    # La resta se aplica a cada fila del DataFrame.
+  
     df_sesgo = fiabilidades_estimadas.subtract(fiabilidad_verdadera, axis='columns')
-    
-    # 5. Formatear el DataFrame final
+  
     df_sesgo.columns = [f"Bias_R(t={t})" for t in IT_test]
     df_sesgo["alpha"] = df_estimadores["alpha"].values
     
-    # Reordenar para que 'alpha' sea la primera columna
     columnas_ordenadas = ["alpha"] + [col for col in df_sesgo.columns if col != "alpha"]
-    return df_sesgo[columnas_ordenadas]#, fiabilidad_verdadera, fiabilidades_estimadas
+    return df_sesgo[columnas_ordenadas]
 
 # --- DATOS PARA LA SIMULACIÓN Y EL ANÁLISIS ---
 
@@ -257,15 +224,15 @@ print("\n--- Iniciando Análisis de Fiabilidad ---")
 
 # Parámetros para el test de fiabilidad
 IT_test = np.array([16, 24, 32])
-s1_test = np.array([30]) # El nivel de estrés de prueba, como array
+s1_test = np.array([30]) 
 s2_test = np.array([40])
 
-# Analizar resultados de la muestra limpia
+# Sesgo de la muestra limpia
 df_sesgo_clean = analizar_sesgo_fiabilidad(
     df_est_clean, theta_0_gamma, IT_test, s1_test, s2_test
 )
 
-# Analizar resultados de la muestra contaminada
+# Sesgo de la muestra contaminada
 df_sesgo_cont = analizar_sesgo_fiabilidad(
     df_est_cont, theta_0_gamma, IT_test, s1_test, s2_test
 )
@@ -276,13 +243,9 @@ df_sesgo_clean.to_csv(os.path.join(output_path, "fiabilidad_sesgo_clean.csv"), i
 df_sesgo_cont.to_csv(os.path.join(output_path, "fiabilidad_sesgo_cont.csv"), index=False)
 print(f"Archivos CSV de sesgo de fiabilidad guardados en '{output_path}'")
 
-# 3. Generar Tablas LaTeX para el informe
-
-# Combinar los resultados de sesgo en una sola tabla
 df_sesgo_cont_sin_alpha = df_sesgo_cont.drop('alpha', axis=1)
 df_sesgo_combinado = pd.concat([df_sesgo_clean, df_sesgo_cont_sin_alpha], axis=1)
 
-# Generar código LaTeX
 latex_table_sesgo = df_sesgo_combinado.to_latex(index=False, float_format="%.4f")
 latex_table_rmse = df_rmse.to_latex(index=False, float_format="%.4f")
 
@@ -313,3 +276,4 @@ df_fiabilidad_test = pd.DataFrame({
     'Fiabilidad Verdadera R(t)': fiabilidad_verdadera_test
 })
 print(df_fiabilidad_test)
+
