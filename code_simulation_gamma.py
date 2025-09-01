@@ -14,7 +14,7 @@ def gamma_alpha_i(theta, s1, s2):
   return np.exp(a0 + a1 * S1 + a2 * S2).flatten()
 
 def gamma_lambda_i(theta, s1, s2):
-  """Calcula el parámetro de escala lambda (1/tasa) de Gamma."""
+  """Calcula el parámetro de escala lambda de Gamma."""
   b0, b1, b2 = theta[3], theta[4], theta[5]
   S1, S2 = np.meshgrid(s1, s2, indexing='ij')
   return np.exp(b0 + b1 * S1 + b2 * S2).flatten()
@@ -276,4 +276,5 @@ df_fiabilidad_test = pd.DataFrame({
     'Fiabilidad Verdadera R(t)': fiabilidad_verdadera_test
 })
 print(df_fiabilidad_test)
+
 
