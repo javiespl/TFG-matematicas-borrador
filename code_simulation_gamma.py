@@ -48,7 +48,7 @@ def probabilidad_estimada(muestra, K):
 
 def divergencia_gamma(theta, alpha, IT, s1, s2, K, muestra):
   """
-  Calcula la divergencia de densidad de potencia (DPD) de forma vectorizada.
+  Calcula la divergencia de densidad de potencia (DPD).
   El caso alpha=0 corresponde a la divergencia de Kullback-Leibler (KL).
   """
   eps = 1e-10  
@@ -93,9 +93,6 @@ def emdp(theta_inicial, alpha, IT, s1, s2, K, muestra):
 def simulacion(R, theta_0, theta_inicial, theta_cont, IT, s1, s2, K, alphas):
     """
     Realiza la simulación para estimar parámetros con y sin contaminación.
-   
-    Devuelve:
-       Tres DataFrames de pandas con los resultados.
     """
     num_alphas = len(alphas)
     num_params = len(theta_0)
@@ -276,5 +273,6 @@ df_fiabilidad_test = pd.DataFrame({
     'Fiabilidad Verdadera R(t)': fiabilidad_verdadera_test
 })
 print(df_fiabilidad_test)
+
 
 
