@@ -9,14 +9,8 @@ import seaborn as sns
 import os
 from mpmath import hyper
 
-
-# --- CONFIGURACIÓN INICIAL (Igual que en el original) ---
-# Estos parámetros se usan en los cálculos de Psi, J y K.
-x_1= np.array([1, 30, 0])
-x_2= np.array([1, 40, 0])
-
 # ==============================================================================
-# === FUNCIONES AUXILIARES VECTORIZADAS (Reutilizables para todos los modelos) ===
+# === FUNCIONES AUXILIARES  ===
 # ==============================================================================
 
 def probabilidad_estimada(muestra, K):
@@ -25,18 +19,16 @@ def probabilidad_estimada(muestra, K):
 
 def _prepare_dic_inputs(IT, s1):
     """
-    Crea arrays aplanados para IT, s1 y la matriz de diseño X,
-    listos para cálculos vectorizados.
+    Crea arrays aplanados para IT, s1 y la matriz de diseño X.
     """
     # Crea un grid de combinaciones (len(IT), len(s1))
     s1_grid, IT_grid = np.meshgrid(s1, IT)
 
-    # Aplana los grids para obtener vectores 1D
+    # Aplana los grids para obtener vectores 1D.
     flat_IT = IT_grid.flatten()
     flat_s1 = s1_grid.flatten()
 
-    # Construye la matriz de diseño X de forma programática
-    # Asume que x_1 y x_2 son [1, s1_val, 0]
+    # Construye la matriz de diseño X .
     X_flat = np.zeros((len(flat_s1), 3))
     X_flat[:, 0] = 1
     X_flat[:, 1] = flat_s1
@@ -48,21 +40,21 @@ def _prepare_dic_inputs(IT, s1):
 # ==============================================================================
 
 def gamma_params(theta, s1):
-  """Calcula los parámetros alpha y lambda de Gamma de forma vectorizada."""
+  """Calcula los parámetros alpha y lambda de Gamma."""
   a0, a1, b0, b1 = theta[0], theta[1], theta[2], theta[3]
   alphai = np.exp(a0 + a1 * s1)
   lambdai = np.exp(b0 + b1 * s1)
   return alphai, lambdai
 
 def probabilidad_gamma(theta, IT, s1, s2):
-  """Calcula la probabilidad de fallo Gamma usando broadcasting."""
+  """Calcula la probabilidad de fallo Gamma."""
   alphai, lambdai = gamma_params(theta, s1)
-  IT_col = IT[:, np.newaxis] # (n_IT, 1)
-  prob_matrix = stat.gamma.cdf(IT_col, a=alphai, scale=lambdai) # Broadcasting
+  IT_col = IT[:, np.newaxis] 
+  prob_matrix = stat.gamma.cdf(IT_col, a=alphai, scale=lambdai) 
   return prob_matrix.flatten()
 
 def divergencia_gamma(theta, alpha, IT, s1, s2, K, muestra):
-    """Calcula la DPD para el modelo Gamma de forma vectorizada."""
+    """Calcula la DPD para el modelo Gamma."""
     eps = 1e-10
     pi_theta1 = probabilidad_gamma(theta, IT, s1, s2)
     pi_theta1 = np.clip(pi_theta1, eps, 1.0 - eps)
@@ -89,10 +81,10 @@ def emdp_gamma(theta_inicial, alpha, IT, s1, s2, K, muestra):
   result = opt.minimize(divergencia_gamma, theta_inicial, args=args, method='L-BFGS-B')
   return result.x
 
-# --- CÁLCULO DEL DIC PARA GAMMA (VECTORIZADO) ---
+# --- CÁLCULO DEL DIC PARA GAMMA ---
 
 def l_i_s_i_gamma(theta, IT, s1, s2):
-    """Calcula los vectores l_i y s_i para Gamma. (VERSIÓN CORREGIDA)"""
+    """Calcula los vectores l_i y s_i para Gamma. """
     flat_IT, flat_s1, _ = _prepare_dic_inputs(IT, s1)
     
     alphai_base, lambdai_base = gamma_params(theta, s1)
@@ -102,7 +94,7 @@ def l_i_s_i_gamma(theta, IT, s1, s2):
     pi_theta1 = probabilidad_gamma(theta, IT, s1, s2)
     z = -flat_IT / flat_lambdai
 
-    # Para cada par de 'a' (alpha) y 'val_z' (z), llamamos a hyper con las listas que espera.
+    
     hypergeom_term = np.array([
         float(hyper([a, a], [1 + a, 1 + a], val_z))
         for a, val_z in zip(flat_alphai, z)
@@ -118,14 +110,12 @@ def l_i_s_i_gamma(theta, IT, s1, s2):
     return l_i, s_i
 
 def J_K_alpha_gamma(theta, alpha, IT, s1, s2, K, muestra):
-    """Calcula las matrices J_alpha y K_alpha para Gamma de forma vectorizada."""
+    """Calcula las matrices J_alpha y K_alpha para Gamma."""
     pi_theta1 = probabilidad_gamma(theta, IT, s1, s2)
     pi_theta2 = 1 - pi_theta1
     l, s = l_i_s_i_gamma(theta, IT, s1, s2)
     _, _, X = _prepare_dic_inputs(IT, s1)
 
-    # Construye el array de matrices Psi (N, 2, 2)
-    # x_dot_x es un vector de N elementos con el producto punto de cada fila de X consigo misma.
     x_dot_x = np.sum(X * X, axis=1)
     
     Psi = np.zeros((len(l), 2, 2))
@@ -142,9 +132,6 @@ def J_K_alpha_gamma(theta, alpha, IT, s1, s2, K, muestra):
     weight_J = (pi_theta1_c**(alpha - 1)) + (pi_theta2_c**(alpha - 1))
     weight_K = (pi_theta1 * pi_theta2) * (weight_J**2)
 
-    # Multiplica cada matriz Psi por su peso y suma sobre todas las observaciones
-    # El broadcasting (..., np.newaxis, np.newaxis) expande los vectores de peso
-    # para que se multipliquen elemento a elemento con el array Psi.
     J_alpha = np.sum(Psi * weight_J[:, np.newaxis, np.newaxis], axis=0) * (K / (K * len(muestra)))
     K_alpha = np.sum(Psi * weight_K[:, np.newaxis, np.newaxis], axis=0) * (K / (K * len(muestra)))
     
@@ -165,21 +152,21 @@ def compute_DIC_gamma(theta, alpha, IT, s1, s2, K, muestra):
 # ==============================================================================
 
 def weibull_params(theta, s1):
-    """Calcula los parámetros alpha (escala) y nu (forma) de Weibull."""
+    """Calcula los parámetros alpha y nu de Weibull."""
     a0, a1, b0, b1 = theta[0], theta[1], theta[2], theta[3]
     alphai = np.exp(a0 + a1 * s1)
     nui = np.exp(b0 + b1 * s1)
     return alphai, nui
 
 def probabilidad_weibull(theta, IT, s1, s2):
-    """Calcula la probabilidad de fallo Weibull usando broadcasting."""
+    """Calcula la probabilidad de fallo Weibull."""
     alphai, nui = weibull_params(theta, s1)
     IT_col = IT[:, np.newaxis]
     prob_matrix = stat.weibull_min.cdf(IT_col, c=nui, scale=alphai)
     return prob_matrix.flatten()
 
 def divergencia_weibull(theta, alpha, IT, s1, s2, K, muestra):
-    """Calcula la DPD para el modelo Weibull de forma vectorizada."""
+    """Calcula la DPD para el modelo Weibull."""
     eps = 1e-10
     pi_theta1 = probabilidad_weibull(theta, IT, s1, s2)
     pi_theta1 = np.clip(pi_theta1, eps, 1.0 - eps)
@@ -206,7 +193,7 @@ def emdp_weibull(theta_inicial, alpha, IT, s1, s2, K, muestra):
   result = opt.minimize(divergencia_weibull, theta_inicial, args=args, method='L-BFGS-B')
   return result.x
 
-# --- CÁLCULO DEL DIC PARA WEIBULL (VECTORIZADO) ---
+# --- CÁLCULO DEL DIC PARA WEIBULL ---
 
 def l_i_s_i_weibull(theta, IT, s1, s2):
     """Calcula los vectores l_i y s_i para Weibull."""
@@ -226,7 +213,7 @@ def l_i_s_i_weibull(theta, IT, s1, s2):
     return l_i, s_i
 
 def J_K_alpha_weibull(theta, alpha, IT, s1, s2, K, muestra):
-    """Calcula las matrices J_alpha y K_alpha para Weibull de forma vectorizada."""
+    """Calcula las matrices J_alpha y K_alpha para Weibull."""
     pi_theta1 = probabilidad_weibull(theta, IT, s1, s2)
     pi_theta2 = 1 - pi_theta1
     l, s = l_i_s_i_weibull(theta, IT, s1, s2)
@@ -267,33 +254,33 @@ def compute_DIC_weibull(theta, alpha, IT, s1, s2, K, muestra):
 # ==============================================================================
 
 def lognorm_params(theta, s1):
-    """Calcula los parámetros lambda (escala) y sigma (forma) de Lognormal."""
+    """Calcula los parámetros lambda  y sigma de Lognormal."""
     a0, a1, b0, b1 = theta[0], theta[1], theta[2], theta[3]
     lambdai = np.exp(a0 + a1 * s1)
     sigmai = np.exp(b0 + b1 * s1)
     return lambdai, sigmai
 
 def probabilidad_lognorm(theta, IT, s1, s2):
-    """Calcula la probabilidad de fallo Lognormal usando broadcasting."""
+    """Calcula la probabilidad de fallo Lognormal."""
     lambdai, sigmai = lognorm_params(theta, s1)
     IT_col = IT[:, np.newaxis]
     prob_matrix = stat.lognorm.cdf(IT_col, s=sigmai, scale=lambdai)
     return prob_matrix.flatten()
 
 def gen_muestra_binomial_lognorm(theta, IT, s1, s2, K, seed):
-    """Genera una muestra binomial para el modelo Lognormal de forma vectorizada."""
+    """Genera una muestra binomial para el modelo Lognormal."""
     pi_theta = probabilidad_lognorm(theta, IT, s1, s2)
     np.random.seed(seed)
     return np.random.binomial(K, pi_theta)
 
 def gen_muestra_binomial_gamma(theta, IT, s1, s2, K, seed):
-    """Genera una muestra binomial para el modelo Lognormal de forma vectorizada."""
+    """Genera una muestra binomial para el modelo Lognormal."""
     pi_theta = probabilidad_gamma(theta, IT, s1, s2)
     np.random.seed(seed)
     return np.random.binomial(K, pi_theta)
 
 def divergencia_lognorm(theta, alpha, IT, s1, s2, K, muestra):
-    """Calcula la DPD para el modelo Lognormal de forma vectorizada."""
+    """Calcula la DPD para el modelo Lognormal."""
     eps = 1e-10
     pi_theta1 = probabilidad_lognorm(theta, IT, s1, s2)
     pi_theta1 = np.clip(pi_theta1, eps, 1.0 - eps)
@@ -332,7 +319,6 @@ def l_i_s_i_lognorm(theta, IT, s1, s2):
     
     z = (np.log(flat_IT) - np.log(flat_lambdai)) / flat_sigmai
     
-    # La densidad de la normal estándar phi(z)
     norm_pdf_vals = stat.norm.pdf(z)
     
     l_i = (1 / flat_sigmai) * norm_pdf_vals
@@ -341,7 +327,7 @@ def l_i_s_i_lognorm(theta, IT, s1, s2):
     return l_i, s_i
 
 def J_K_alpha_lognorm(theta, alpha, IT, s1, s2, K, muestra):
-    """Calcula las matrices J_alpha y K_alpha para Lognormal de forma vectorizada."""
+    """Calcula las matrices J_alpha y K_alpha para Lognormal."""
     pi_theta1 = probabilidad_lognorm(theta, IT, s1, s2)
     pi_theta2 = 1 - pi_theta1
     l, s = l_i_s_i_lognorm(theta, IT, s1, s2)
@@ -393,10 +379,11 @@ def simulacion(R, theta_0, theta_inicial_gamma, theta_inicial_weibull, theta_ini
         DIC_lognorm_R = np.zeros(R)
       
         for j in range(R):
-            # Se genera una única muestra basada en el modelo Lognormal (como en el original)
+            # Se genera una única muestra basada en el modelo Gamma
+            # Para calcular el DIC con datos reales se sustituye por los datos:  muestra = np.array([3, 1, 6, 3, 5, 7, 7, 7, 9])
             muestra = gen_muestra_binomial_gamma(theta_0, IT, s1, s2, K, j)
             
-            # Ajustar y calcular DIC para cada modelo
+            # Calcular DIC para cada modelo
             theta_est_gamma = emdp_gamma(theta_inicial_gamma, alpha, IT, s1, s2, K, muestra)
             DIC_gamma_R[j] = compute_DIC_gamma(theta_est_gamma, alpha, IT, s1, s2, K, muestra)
             
@@ -421,83 +408,10 @@ def simulacion(R, theta_0, theta_inicial_gamma, theta_inicial_weibull, theta_ini
 
     return df_DIC
 
-
-# ==============================================================================
-# ===================== NUEVA FUNCIÓN PARA GRAFICAR CDFs =======================
-# ==============================================================================
-
-def graficar_cdfs_iniciales(theta_gamma, theta_weibull, theta_lognorm, s1_levels, t_max=80, output_path="."):
-    """
-    Genera un gráfico comparando las CDF de los tres modelos para diferentes
-    niveles de estrés, basados en sus parámetros iniciales.
-
-    Args:
-        theta_gamma (np.array): Parámetros iniciales para el modelo Gamma.
-        theta_weibull (np.array): Parámetros iniciales para el modelo Weibull.
-        theta_lognorm (np.array): Parámetros iniciales para el modelo Lognormal.
-        s1_levels (list or np.array): Lista de niveles de estrés a graficar (ej. [30, 40]).
-        t_max (int): Límite superior del eje de tiempo para el gráfico.
-        output_path (str): Carpeta donde se guardará el gráfico.
-    """
-    if not os.path.exists(output_path):
-        os.makedirs(output_path)
-
-    # 1. Configurar el estilo y la figura del gráfico
-    sns.set_theme(style="whitegrid", rc={"grid.linestyle": ":"})
-    plt.figure(figsize=(12, 8))
-    
-    # 2. Definir un rango de tiempo para el eje X
-    t = np.linspace(0.01, t_max, 500)  # Empezar en >0 para evitar problemas con log(0)
-
-    # 3. Definir estilos para diferenciar los modelos
-    line_styles = {'Gamma': '-', 'Weibull': '--', 'Lognormal': ':'}
-    
-    # 4. Iterar sobre cada nivel de estrés para dibujar las curvas
-    for s1_val in s1_levels:
-        s1_array = np.array([s1_val]) # Las funciones de parámetros esperan un array
-
-        # --- Calcular CDF para Gamma ---
-        alpha_g, lambda_g = gamma_params(theta_gamma, s1_array)
-        cdf_gamma = stat.gamma.cdf(t, a=alpha_g[0], scale=lambda_g[0])
-        plt.plot(t, cdf_gamma, label=f'Gamma (s1={s1_val})', linestyle=line_styles['Gamma'])
-
-        # --- Calcular CDF para Weibull ---
-        alpha_w, nu_w = weibull_params(theta_weibull, s1_array)
-        cdf_weibull = stat.weibull_min.cdf(t, c=nu_w[0], scale=alpha_w[0])
-        plt.plot(t, cdf_weibull, label=f'Weibull (s1={s1_val})', linestyle=line_styles['Weibull'])
-        
-        # --- Calcular CDF para Lognormal ---
-        lambda_l, sigma_l = lognorm_params(theta_lognorm, s1_array)
-        cdf_lognorm = stat.lognorm.cdf(t, s=sigma_l[0], scale=lambda_l[0])
-        plt.plot(t, cdf_lognorm, label=f'Lognormal (s1={s1_val})', linestyle=line_styles['Lognormal'])
-
-    # 5. Añadir títulos, etiquetas y leyenda
-    plt.title('Funciones de Distribución Acumulada (CDF) Iniciales', fontsize=18)
-    plt.xlabel('Tiempo (t)', fontsize=14)
-    plt.ylabel('Probabilidad Acumulada de Fallo F(t)', fontsize=14)
-    plt.legend(title='Modelo (Nivel de Estrés)', fontsize=11, loc='best')
-    plt.xlim(0, t_max)
-    plt.ylim(0, 1.05)
-    plt.xticks(fontsize=12)
-    plt.yticks(fontsize=12)
-
-    # 6. Guardar y mostrar el gráfico
-    plot_filename = os.path.join(output_path, "comparacion_CDF_iniciales.png")
-    plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
-    print(f"\nGráfico de CDFs iniciales guardado en: {plot_filename}")
-    plt.show()
-
 # ==============================================================================
 # ============================= BLOQUE DE EJECUCIÓN ============================
 # ==============================================================================
 
-
-'''
-    theta_0 = np.array([ 4.081,  -0.0123, -2.2528,  0.0301])
-    theta_inicial_gamma = np.array([4.5, -0.06, -0.46, 0.05])
-    theta_inicial_weibull = np.array([ 4.0724, -0.0085,  2.4249, -0.0317])
-    theta_inicial_lognorm = np.array([ 4.081,  -0.0123, -2.2528,  0.0301])
-'''
 if __name__ == '__main__':
     # --- Parámetros de la simulación ---
     
@@ -513,19 +427,25 @@ if __name__ == '__main__':
     K = 100
     R = 1000
     alphas = np.array([0.2, 0.4, 0.6, 0.8])
-    
-    # --- LLAMADA A LA NUEVA FUNCIÓN DE GRÁFICO CDF ---
-    # Esto se ejecuta ANTES de la simulación principal.
-    graficar_cdfs_iniciales(
-        theta_inicial_gamma,
-        theta_inicial_weibull,
-        theta_inicial_lognorm,
-        s1,
-        t_max=80, # Ajusta t_max para ver bien las curvas
-        output_path="graficos_dic"
-    )
 
-    # --- Ejecutar la simulación principal (código original) ---
+
+    # Para calcular el DIC con los datos reales se emplean los siguientes parámetros:
+    '''
+    theta_0 = np.array([ 16, -0.04,   -0.59, -0.002])
+        theta_inicial_gamma = np.array([-4.71754, 0.01572, 22.24537,  -0.06095])
+        theta_inicial_weibull = np.array([ 16.02522, -0.04043 ,  -0.59464, 0.00246])
+        theta_inicial_lognorm = np.array([16.540524, -0.043049,  5.808291,  -0.018329])
+    
+        IT = np.array([10,20,30])
+        s1 = np.array([308,318,328])
+        s2 = np.array([0, 0])
+    
+        K = 10
+        R = 1
+        alphas = np.array([0.2, 0.4, 0.6, 0.8])
+    '''
+
+    # --- Ejecutar la simulación principal ---
     print("\nIniciando simulación para el cálculo del DIC...")
     
     df_resultados_DIC = simulacion(
@@ -533,52 +453,6 @@ if __name__ == '__main__':
         theta_inicial_lognorm, IT, s1, s2, K, alphas
     )
 
-    print("\n--- Resultados del Criterio de Información de Divergencia (DIC) ---")
+    print("\n--- Resultados del DIC ---")
     print(df_resultados_DIC)
    
-    print("\n--- Código LaTeX para la Tabla de Resultados ---")
-
-    # 1. Crear una copia del DataFrame para formatear
-    df_latex = df_resultados_DIC.copy()
-
-   # 2. Identificar las columnas de DIC y encontrar el mínimo en cada fila
-    dic_cols = [col for col in df_latex.columns if 'DIC' in col]
-    min_col_por_fila = df_latex[dic_cols].idxmin(axis=1)
-
-   # 3. Aplicar el formato de negrita y de número de decimales
-    decimales = 4
-    for idx, row in df_latex.iterrows():
-       for col_name in dic_cols:
-           valor = row[col_name]
-           if col_name == min_col_por_fila[idx]:
-               df_latex.loc[idx, col_name] = f"\\textbf{{{valor:.{decimales}f}}}"
-           else:
-               df_latex.loc[idx, col_name] = f"{valor:.{decimales}f}"
-
-   # 4. Renombrar las columnas para una presentación profesional
-    nombres_columnas_latex = {
-       'alpha': r'$\alpha$',
-       'DIC_gamma': 'DIC Gamma',
-       'DIC_weibull': 'DIC Weibull',
-       'DIC_lognorm': 'DIC Lognormal'
-   }
-    df_latex.rename(columns=nombres_columnas_latex, inplace=True)
-
-   # 5. Definir el caption y label para la tabla
-    caption = "Resultados del DIC promedio para los tres modelos cuando los datos son generados a partir de una distribución Gamma. El valor mínimo para cada nivel de robustez $\\alpha$ se muestra en negrita."
-    label = "tab:dic_gamma_simulation"
-
-   # 6. Generar el código LaTeX y mostrarlo
-    codigo_latex = df_latex.to_latex(
-       index=False,
-       escape=False, # MUY IMPORTANTE: para que no escape los comandos de LaTeX
-       caption=caption,
-       label=label,
-       position='!htbp',
-       column_format='crrr'
-   )
-   
-   # Añadir \centering para una mejor apariencia
-    codigo_latex = codigo_latex.replace(r'\begin{tabular}', r'\centering' + '\n' + r'\\begin{tabular}')
-
-    print(codigo_latex)
